@@ -13,6 +13,7 @@ config.mk:
 	echo "CC=\$${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-gcc" >> $@
 	echo "AR=\$${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-ar" >> $@
 	echo "STRIP=\$${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-strip" >> $@
+	echo "ESPTOOL=\$${TOOLCHAIN_ROOT}/bin/esptool.py" >> $@
 
 
 ${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-gcc:
