@@ -8,6 +8,8 @@
 #include <espconn.h>
 #include <mem.h>
 
+#include "sntp.h"
+
 static const int pin_station = 12;
 static const int pin_ap = 14;
 
@@ -31,9 +33,10 @@ void ICACHE_FLASH_ATTR error_timer(void *arg) {
   //os_printf("Mark\n");
   //  system_deep_sleep(10000000);
   os_printf("ERROR Timout\n");
-  if (!wifi_station_disconnect()) {
+  wifi_station_disconnect();
+  //  if (!wifi_station_disconnect()) {
     connectAP();
-  }
+    //  }
 }
 
 const char ssid[] = "ESP8266_CONF";
@@ -691,6 +694,7 @@ void wifi_handle_event_cb(System_Event_t *evt) {
       espconn_delete(&apconn);
     }
     espconn_accept(&masterconn);
+    requestTime();
     break;
   case EVENT_STAMODE_DISCONNECTED:
     espconn_delete(&masterconn);

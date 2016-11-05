@@ -16,11 +16,11 @@ ${PROJECT_NAME}: ${PROJECT_NAME}.o sntp.o
 
 .PHONEY: clean test
 flash: ${PROJECT_NAME}-0x00000.bin
-	PATH=${TOOLCHAIN_ROOT}/bin/:$${PATH} ${ESPTOOL} write_flash 0 ${PROJECT_NAME}-0x00000.bin 0x40000 ${PROJECT_NAME}-0x40000.bin
+	PATH=${TOOLCHAIN_ROOT}/bin/:$${PATH} ${ESPTOOL} write_flash 0 ${PROJECT_NAME}-0x00000.bin 0x10000 ${PROJECT_NAME}-0x10000.bin
 	touch $@
 
 clean:
-	rm -f ${PROJECT_NAME} ${PROJECT_NAME}.o ${PROJECT_NAME}-0x00000.bin ${PROJECT_NAME}-0x40000.bin flash
+	rm -f ${PROJECT_NAME} ${PROJECT_NAME}.o ${PROJECT_NAME}-0x00000.bin ${PROJECT_NAME}-0x10000.bin flash
 
 test: flash
 	gtkterm --speed 9600 --port /dev/ttyUSB0
