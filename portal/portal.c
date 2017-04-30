@@ -622,7 +622,7 @@ tcp_connTask(os_event_t *events) {
       uint32_t minutes = ((uint32_t)pespconn->reverse - (hours * 3600)) / 60;
       uint32_t seconds = (uint32_t)pespconn->reverse - (hours * 3600) - (minutes * 60);
 
-      os_sprintf(buffer, "%s%d:%d:%d%s", json_msg_pt1, hours, minutes, seconds, json_msg_pt2);
+      os_sprintf(buffer, "%s%02d:%02d:%02d%s", json_msg_pt1, hours, minutes, seconds, json_msg_pt2);
       espconn_sent(pespconn, (uint8*)buffer, os_strlen(buffer));
     }
     break;
