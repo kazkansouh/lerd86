@@ -5,6 +5,7 @@
 const int latchPin = 8;
 const int oePin = 7;
 const int iDelay = 250;
+const int serialDisablePin = 4;
 unsigned int iSecond = 1000;
 
 const int rows = 10;
@@ -33,9 +34,9 @@ unsigned long last_time = 0;
 unsigned long ui_seconds = 0 ;
 unsigned long last_seconds = 0;
 
-#include <SoftwareSerial.h>
+//#include <SoftwareSerial.h>
 
-SoftwareSerial mySerial(10, 5); // RX, TX
+//SoftwareSerial mySerial(10, 5); // RX, TX
 
 //#define DEBUG
 
@@ -52,12 +53,11 @@ void setup() {
   pinMode(latchPin, OUTPUT);
   digitalWrite(oePin,HIGH);
   pinMode(oePin, OUTPUT);
+  pinMode(serialDisablePin, INPUT_PULLUP);
 
   clearbuffer();
 
   Serial.begin(9600);
-
-  
   
   SPI.begin();
   SPI.beginTransaction(SPISettings(16000000, MSBFIRST, SPI_MODE0));
@@ -66,8 +66,17 @@ void setup() {
   digitalWrite(oePin,LOW);
 }
 
+bool _serialDisablePin = LOW;
+bool serialDisable = false;
+
 void loop() {
   // put your main code here, to run repeatedly:
+
+  bool serialPin = digitalRead(serialDisablePin);
+  if (serialPin == LOW && _serialDisablePin == HIGH) {
+    serialDisable = !serialDisable;
+  }
+  _serialDisablePin = serialPin;
 
   unsigned long now = millis();
 
@@ -80,7 +89,9 @@ void loop() {
   if (now - last_time > iDelay) {
     last_time = now;
     updatebuffer();
-    echobuffer();
+    if (!serialDisable) {
+      echobuffer();
+    }
   }
 
   refresh();
@@ -354,11 +365,13 @@ void serialEvent() {
   while (Serial.available()) {
     // get the new byte:
     unsigned char inChar = Serial.read();
-    // add it to the inputString:
-    unsigned int new_head = (pending_head + 1) % pending_size;
-    if (new_head != pending_tail) { // drop characters over size
-      pending[pending_head] = inChar;
-      pending_head = new_head;
+    if (!serialDisable) {
+      // add it to the inputString:
+      unsigned int new_head = (pending_head + 1) % pending_size;
+      if (new_head != pending_tail) { // drop characters over size
+        pending[pending_head] = inChar;
+        pending_head = new_head;
+      }
     }
   }
 }
