@@ -219,11 +219,19 @@ const char* msg_state =
 const char* json_ok = 
   "HTTP/1.1 200\r\n\r\n"
   "{\"message\": \"ok\"}";
+const char* json_fail = 
+  "HTTP/1.1 200\r\n\r\n"
+  "{\"message\": \"fail\"}";
 const char* json_state = 
   "HTTP/1.1 200\r\n\r\n";
 const char* msg_setwifi_page = 
   "HTTP/1.1 200\r\n\r\n"
   "<html><head><title>ESP8622 SetWiFi Details</title></head><body><form action=\"setwifi.html\" method=\"get\">SSID: <input type=\"text\" name=\"ssid\"></input><br>Password: <input type=\"text\" name=\"password\"></input><br><input type=\"submit\">Submit</input></form></body></html>";
+const char* json_msg_pt1 = 
+  "HTTP/1.1 200\r\n\r\n"
+  "{\"message\": \"";
+const char* json_msg_pt2 = 
+  "\"}";
 
 
 
@@ -415,8 +423,9 @@ tcpclient_recv_cb(void *arg, char *pdata, unsigned short len) {
 	system_os_post(tcp_connTaskPrio, 7, (uint32_t)arg);
 	return;
       } else if (os_strncmp("/settime.json",start, reqsize) == 0) {
-	requestTime();
-	system_os_post(tcp_connTaskPrio, 7, (uint32_t)arg);
+	if (!requestTime(arg)) {
+          system_os_post(tcp_connTaskPrio, 10, (uint32_t)arg);
+        }
 	return;
       } else if (os_strncmp("/scroll.json?scroll=1",start, reqsize) == 0) {
 	uart0_write_char(0xFF);
@@ -603,6 +612,19 @@ tcp_connTask(os_event_t *events) {
     break;
   case 9:
     espconn_sent(pespconn, (uint8*)msg_setwifi_page, os_strlen(msg_setwifi_page));
+    break;
+  case 10:
+    espconn_sent(pespconn, (uint8*)json_fail, os_strlen(json_fail));
+    break;
+  case 11: 
+    {
+      uint32_t hours   = (uint32_t)pespconn->reverse / 3600;
+      uint32_t minutes = ((uint32_t)pespconn->reverse - (hours * 3600)) / 60;
+      uint32_t seconds = (uint32_t)pespconn->reverse - (hours * 3600) - (minutes * 60);
+
+      os_sprintf(buffer, "%s%d:%d:%d%s", json_msg_pt1, hours, minutes, seconds, json_msg_pt2);
+      espconn_sent(pespconn, (uint8*)buffer, os_strlen(buffer));
+    }
     break;
   case 0:
   default:

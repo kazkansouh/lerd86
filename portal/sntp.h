@@ -1,8 +1,6 @@
 #ifdef _SNTP_H
 #define _SNTP_H
 
-
-void ICACHE_FLASH_ATTR requestTime();
-
+bool ICACHE_FLASH_ATTR requestTime(void* arg);
 
 #endif

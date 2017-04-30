@@ -1,9 +1,4 @@
-
-//#include "ets_sys.h"
 #include "osapi.h"
-//#include "gpio.h"
-//#include "os_type.h"
-//#include <driver/uart.h>
 #include <user_interface.h>
 #include <espconn.h>
 #include <mem.h>
@@ -12,6 +7,9 @@
 
 LOCAL struct espconn ntpconn;
 
+#define tcp_connTaskPrio        1
+
+/* Standard NTP frame */
 typedef struct __attribute__((packed)) {
   uint8_t flags;
   uint8_t stratum;
@@ -45,8 +43,8 @@ LOCAL inline uint32_t ntoh(uint32_t x) {
 
 LOCAL
 void plus(uint32_t sec1, uint32_t frac1,
-	  uint32_t sec2, uint32_t frac2,
-	  uint64_t* res_sec, uint32_t* res_frac) {
+          uint32_t sec2, uint32_t frac2,
+          uint64_t* res_sec, uint32_t* res_frac) {
   uint64_t f = (uint64_t)frac1 + (uint64_t)frac2;
   *res_frac = f & 0xFFFFFFFF;
   *res_sec = (uint64_t)sec1 + (uint64_t)sec2;
@@ -58,8 +56,8 @@ void plus(uint32_t sec1, uint32_t frac1,
 
 LOCAL
 void sub(uint32_t sec1, uint32_t frac1,
-	 uint32_t sec2, uint32_t frac2,
-	 uint32_t* res_sec, uint32_t* res_frac) {
+         uint32_t sec2, uint32_t frac2,
+         uint32_t* res_sec, uint32_t* res_frac) {
   if (frac1 < frac2) {
     uint64_t f = 0xFFFFFFFF + frac1;
     *res_frac = f - frac2;
@@ -72,8 +70,8 @@ void sub(uint32_t sec1, uint32_t frac1,
 
 LOCAL void  ICACHE_FLASH_ATTR
 ntpconn_recv_callback (void *arg,
-		       char *pdata,
-		       unsigned short len) {
+                       char *pdata,
+                       unsigned short len) {
   uint32_t un_receive      = system_get_time();
   uint32_t un_receive_sec  = un_receive/1000000;
   uint32_t un_receive_frac = (un_receive%1000000) * 0xFFFFFFFF;
@@ -152,24 +150,20 @@ ntpconn_recv_callback (void *arg,
   uart0_write_char((ardtime & 0x0000FF00) >> 8);
   uart0_write_char(ardtime & 0x0FF);
 
-
-  //  uart0_write_char(0xFF);
-  // uart0_write_char(0x04);
-  // TODO: write the 32 bit value here
-
+  ((struct espconn *)(pespconn->reverse))->reverse = (void*)ardtime;
+  system_os_post(tcp_connTaskPrio, 11, (uint32_t)(pespconn->reverse));
 }
-
 
 LOCAL void ICACHE_FLASH_ATTR request(void* arg) {
   os_printf("Sending request!\n");
   // build requiest
   ntp_payload req;
-  req.flags		       = 0xe3;
-  req.stratum		       = 0;
-  req.poll		       = 3;
-  req.precision		       = 0xFA;
-  req.root_delay_sec	       = 1;
-  req.root_delay_frac	       = 0;
+  req.flags                    = 0xe3;
+  req.stratum                  = 0;
+  req.poll                     = 3;
+  req.precision                = 0xFA;
+  req.root_delay_sec           = 1;
+  req.root_delay_frac          = 0;
   req.root_dispersion_sec      = 1;
   req.root_dispersion_frac     = 0;
   req.reference_identifier     = 0;
@@ -186,7 +180,7 @@ LOCAL void ICACHE_FLASH_ATTR request(void* arg) {
   espconn_sendto(&ntpconn, (uint8*)(&req), sizeof(ntp_payload));
 }
 
-void ICACHE_FLASH_ATTR requestTime() {
+bool ICACHE_FLASH_ATTR requestTime(void *arg) {
 
   ntpconn.type = ESPCONN_UDP;
   ntpconn.state = ESPCONN_NONE;
@@ -196,21 +190,18 @@ void ICACHE_FLASH_ATTR requestTime() {
   ntpconn.proto.udp->remote_ip[1] = 79;
   ntpconn.proto.udp->remote_ip[2] = 162;
   ntpconn.proto.udp->remote_ip[3] = 34;
+  ntpconn.reverse = arg;
 
   espconn_regist_recvcb(&ntpconn, ntpconn_recv_callback);
 
   if (espconn_create(&ntpconn) != 0) {
     os_printf("Failed to create connection\n");
-    return;
+    return false;
   }
 
   os_timer_setfn(&ntp_t, request , NULL);
 
   request(NULL);
 
-
-  // TODO: Register callbacks
-  //       Initilise connection
-  //
-
+  return true;
 }
