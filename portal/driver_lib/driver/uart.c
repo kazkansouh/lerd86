@@ -331,7 +331,7 @@ uart_init(UartBautRate uart0_br, os_task_t uart_recvTask)
 
     /*option 2: output from uart1,uart1 output will not wait , just for output debug info */
     /*os_printf output uart data via uart1(GPIO2)*/
-    //os_install_putc1((void *)uart1_write_char);    //use this one to output debug information via uart1 //
+    os_install_putc1((void *)uart1_write_char);    //use this one to output debug information via uart1 //
 
     /*option 3: output from uart0 will skip current byte if fifo is full now... */
     /*see uart0_write_char_no_wait:you can output via a buffer or output directly */

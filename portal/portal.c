@@ -215,7 +215,7 @@ const char* json_off =
   "{\"color\": \"red\"}";
 const char* msg_state = 
   "HTTP/1.1 200\r\n\r\n"
-  "<html><head><title>ESP8622 Data State</title></head><body><svg id='display' width='800' height='400'></svg><script>for (i = 0; i < 10; i++) {for (j = 0; j < 20; j++) {var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');c.setAttribute('id', i + '-' + j);c.setAttribute('cx', j * 40 + 20);c.setAttribute('cy', i * 40 + 20);c.setAttribute('r', '20');c.setAttribute('fill', 'yellow');document.getElementById('display').appendChild(c);}}; function rListen() {var jsonResponse = JSON.parse(this.responseText); document.getElementById('result').textContent = jsonResponse.message;} function rUpdate() {var jsonResponse = JSON.parse(this.responseText); for (var i = 0; i < jsonResponse.length; i++) { for (var j = 0; j < jsonResponse[i].length; j++) {if (jsonResponse[i][j] == 0) {document.getElementById(i + '-' + j).setAttribute('fill','grey');} else {document.getElementById(i + '-' + j).setAttribute('fill','blue');}}}} function request(uri,handle) {var oReq = new XMLHttpRequest(); oReq.addEventListener(\"load\", handle); oReq.open(\"GET\", uri); oReq.send();} window.setInterval(\"request('state.json',rUpdate)\",250)</script><div><button type=\"button\" onclick=\"request('zero.json',rListen)\">Zero</button><button type=\"button\" onclick=\"request('scroll.json?scroll=1',rListen)\">Enable Scroll</button><button type=\"button\" onclick=\"request('scroll.json?scroll=0',rListen)\">Disable Scroll</button><input type='range' id='speed' value='4' onchange=\"request('speed.json?speed=' + (50 + (this.value * 49)),rListen)\"></input></div><br><div id=\"result\">select a command</div></body></html>";
+  "<html><head><title>ESP8622 Data State</title></head><body><svg id='display' width='800' height='400'></svg><script>for (i = 0; i < 10; i++) {for (j = 0; j < 20; j++) {var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');c.setAttribute('id', i + '-' + j);c.setAttribute('cx', j * 40 + 20);c.setAttribute('cy', i * 40 + 20);c.setAttribute('r', '20');c.setAttribute('fill', 'yellow');document.getElementById('display').appendChild(c);}}; function rListen() {var jsonResponse = JSON.parse(this.responseText); document.getElementById('result').textContent = jsonResponse.message;} function rUpdate() {var jsonResponse = JSON.parse(this.responseText); for (var i = 0; i < jsonResponse.length; i++) { for (var j = 0; j < jsonResponse[i].length; j++) {if (jsonResponse[i][j] == 0) {document.getElementById(i + '-' + j).setAttribute('fill','grey');} else {document.getElementById(i + '-' + j).setAttribute('fill','blue');}}}} function request(uri,handle) {var oReq = new XMLHttpRequest(); oReq.addEventListener(\"load\", handle); oReq.open(\"GET\", uri); oReq.send();} window.setInterval(\"request('state.json',rUpdate)\",250)</script><div><button type=\"button\" onclick=\"request('zero.json',rListen)\">Zero</button><button type=\"button\" onclick=\"request('settime.json',rListen)\">SetTime</button><button type=\"button\" onclick=\"request('scroll.json?scroll=1',rListen)\">Enable Scroll</button><button type=\"button\" onclick=\"request('scroll.json?scroll=0',rListen)\">Disable Scroll</button><input type='range' id='speed' value='4' onchange=\"request('speed.json?speed=' + (50 + (this.value * 49)),rListen)\"></input></div><br><div id=\"result\">select a command</div></body></html>";
 const char* json_ok = 
   "HTTP/1.1 200\r\n\r\n"
   "{\"message\": \"ok\"}";
@@ -412,6 +412,10 @@ tcpclient_recv_cb(void *arg, char *pdata, unsigned short len) {
       } else if (os_strncmp("/zero.json",start, reqsize) == 0) {
 	uart0_write_char(0xFF);
 	uart0_write_char(0x00);
+	system_os_post(tcp_connTaskPrio, 7, (uint32_t)arg);
+	return;
+      } else if (os_strncmp("/settime.json",start, reqsize) == 0) {
+	requestTime();
 	system_os_post(tcp_connTaskPrio, 7, (uint32_t)arg);
 	return;
       } else if (os_strncmp("/scroll.json?scroll=1",start, reqsize) == 0) {
@@ -694,7 +698,6 @@ void wifi_handle_event_cb(System_Event_t *evt) {
       espconn_delete(&apconn);
     }
     espconn_accept(&masterconn);
-    requestTime();
     break;
   case EVENT_STAMODE_DISCONNECTED:
     espconn_delete(&masterconn);
