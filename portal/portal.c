@@ -141,11 +141,12 @@ uart_recvTask(os_event_t *events) {
 	case eByte3:
 	case eByte2:
 	case eByte1:
-	  data_new[uart_state - 1] &= ~((uint32_t)(0xFF << (8 * uart_sub_state)));
-	  data_new[uart_state - 1] |= d_tmp << (8 * uart_sub_state);
+	  data_new[uart_state - 1] &= ~(((uint32_t)0xFF) << (8 * uart_sub_state));
+	  data_new[uart_state - 1] |= ((uint32_t)d_tmp) << (8 * uart_sub_state);
 	  //os_printf("%d-", d_tmp);
 	  if (uart_sub_state == eByte1) {
 	    uart_sub_state = eDelim;
+	    data_new[uart_state - 1] = data_new[uart_state - 1] >> 10;
 	    //os_printf("#%d\n", uart_state);
 	    if (uart_state != eLine10) {
 	      uart_state++;
@@ -667,7 +668,7 @@ void ICACHE_FLASH_ATTR user_init() {
   espconn_regist_time(&apconn, server_timeover, 0);
   espconn_regist_time(&masterconn, server_timeover, 0);
 
-  uart_init(BIT_RATE_9600, uart_recvTask);
+  uart_init(BIT_RATE_57600, uart_recvTask);
   system_os_task(tcp_connTask, tcp_connTaskPrio, tcp_connTaskQueue, tcp_connTaskQueueLen);
   
   os_printf("\nSDK version: %s \n", system_get_sdk_version());

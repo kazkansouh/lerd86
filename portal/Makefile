@@ -26,4 +26,4 @@ clean:
 	make -C driver_lib clean
 
 test: flash
-	gtkterm --speed 9600 --port /dev/ttyUSB0
+	gtkterm --speed 57600 --port /dev/ttyUSB0
