@@ -14,7 +14,10 @@ config.mk:
 	echo "AR=\$${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-ar" >> $@
 	echo "STRIP=\$${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-strip" >> $@
 	echo "ESPTOOL=\$${TOOLCHAIN_ROOT}/bin/esptool.py" >> $@
-
+	echo "LDFLAGS=-L\$${SDK_ROOT}/sdk/ld/ -Teagle.app.v6.ld -L\$${SDK_LIBS}" >> $@
+	echo "CFLAGS=-I. -mlongcalls -I\$${SDK_INCLUDE} -DICACHE_FLASH -Idriver_lib/include/" >> $@
+	echo "ESPTOOL_FULL=PATH=\$${TOOLCHAIN_ROOT}/bin/:\$${PATH} \$${ESPTOOL}" >> $@
+	echo "BAUD_RATE=115200" >> $@
 
 ${TOOLCHAIN_ROOT}/bin/xtensa-lx106-elf-gcc:
 	cd ${SDK_ROOT} && make STANDALONE=n

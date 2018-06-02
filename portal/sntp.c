@@ -30,7 +30,7 @@ typedef struct __attribute__((packed)) {
   uint32_t transmit_timestamp_frac;
 } ntp_payload;
 
-LOCAL volatile os_timer_t ntp_t;
+LOCAL os_timer_t ntp_t;
 
 
 LOCAL inline uint32_t ntoh(uint32_t x) {

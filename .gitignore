@@ -3,3 +3,6 @@ config.mk
 *.o
 *.a
 *.bin
+*.elf
+flash
+init-flash

@@ -13,8 +13,8 @@
 static const int pin_station = 12;
 static const int pin_ap = 14;
 
-static volatile os_timer_t oneshot_init_t;
-static volatile os_timer_t error_timer_t;
+static os_timer_t oneshot_init_t;
+static os_timer_t error_timer_t;
 
 LOCAL uint16_t server_timeover = 60*5;
 LOCAL struct espconn masterconn;
