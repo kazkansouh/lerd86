@@ -12,7 +12,8 @@
 #include <espconn.h>
 #include <mem.h>
 #include <osapi.h>
-#include <string.h>
+#include <strings.h>
+#include <user_interface.h>
 
 #define TIMEOUT 60*5
 #define MAX_HANDLERS 10

@@ -1,9 +1,10 @@
 include ../config.mk
 
-LDLIBS = -nostdlib -Wl,--start-group -lmain -lnet80211 -lwpa -llwip -lpp -lphy -ldriver -Wl,--end-group -lc -lgcc
+CFLAGS += -Wall -Wpedantic -std=c99 -Werror
+LDLIBS = -nostdlib -Wl,--start-group -lmain -lnet80211 -lwpa -llwip -lpp -lphy -lmbedtls -Wl,--end-group -lc -lgcc
 
 PROJECT_NAME=display
-ADDITIONAL_MODULES=stringutil http
+ADDITIONAL_MODULES=stringutil http requester
 OBJECTS=$(PROJECT_NAME).o \
 	$(patsubst %,%.o,$(ADDITIONAL_MODULES))
 

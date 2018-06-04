@@ -173,8 +173,6 @@ typedef struct
 
 } SpiIntInfo;
 
-#pragma upack (1)
-
 /**
  * @brief Initialize SPI module.
  *

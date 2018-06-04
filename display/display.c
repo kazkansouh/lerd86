@@ -7,7 +7,9 @@
 #include <espconn.h>
 #include <mem.h>
 #include "http.h"
+#include "requester.h"
 #include <driver/spi_interface.h>
+#include <strings.h>
 
 LOCAL const int pin_station = 5;
 LOCAL const int pin_ap = 4;
@@ -15,14 +17,58 @@ LOCAL const int pin_ap = 4;
 LOCAL const char ssid[] = "EConfig";
 
 LOCAL os_timer_t error_timer_t;
+LOCAL os_timer_t request_timer_t;
 LOCAL os_timer_t spi_timer_t;
+
+LOCAL requester_cookies_t s_jar = {NULL, 0};
 
 void ICACHE_FLASH_ATTR connectAP(void);
 
-void ICACHE_FLASH_ATTR error_timer(void *arg) {
+LOCAL void ICACHE_FLASH_ATTR error_timer(void *arg) {
   os_printf("ERROR Timout\n");
   wifi_station_disconnect();
   connectAP();
+}
+
+void ICACHE_FLASH_ATTR request_status(void* ctx, e_requester_status_t err) {
+  os_printf("Connection status: %d\n", err);
+  if (err == REQ_CONN_FAIL) {
+    os_timer_arm(&request_timer_t, 20000, 0);
+  }
+  if (err == REQ_CONN_CLOSED) {
+    for (int i = 0; i < s_jar.ui_size; i++) {
+      os_printf("Cookie %s=%s\n",
+                s_jar.s_cookies[i].pch_name,
+                s_jar.s_cookies[i].pch_value);
+    }
+  }
+}
+
+bool  ICACHE_FLASH_ATTR response_header(void* ctx,
+                     uint32_t ui_response_code) {
+  os_printf("code %d\n", ui_response_code);
+ return true;
+}
+
+bool ICACHE_FLASH_ATTR
+response_processor(void* ctx,
+                   const char *pdata,
+                   unsigned short len) {
+  return true;
+}
+
+void ICACHE_FLASH_ATTR request_timer(void *arg) {
+  os_printf("Starting request\n");
+  if (!request("www.google.com",
+               443,
+               "/",
+               &s_jar,
+               request_status,
+               response_header,
+               response_processor,
+               NULL)) {
+    os_printf("failed to start requester");
+  }
 }
 
 LOCAL uint32_t spi_var = 0x01;
@@ -68,6 +114,7 @@ void ICACHE_FLASH_ATTR connectAP() {
   os_printf("starting AP\n");
   // set leds
   gpio_output_set((1 << pin_ap), (1 << pin_station), 0, 0);
+  os_timer_disarm(&request_timer_t);
 
   wifi_set_opmode( SOFTAP_MODE );
   os_memcpy(&apConf.ssid, ssid, os_strlen(ssid));
@@ -187,6 +234,7 @@ void wifi_handle_event_cb(System_Event_t *evt) {
     gpio_output_set((1 << pin_station), 0, 0, 0);
     // reinitilise http server with new connection
     http_init(80);
+    os_timer_arm(&request_timer_t,1000,0);
     break;
   case EVENT_STAMODE_DISCONNECTED:
     gpio_output_set(0, (1 << pin_station), 0, 0);
@@ -250,6 +298,7 @@ void ICACHE_FLASH_ATTR user_init() {
 
   // setup timers
   os_timer_setfn(&error_timer_t, error_timer , NULL);
+  os_timer_setfn(&request_timer_t, request_timer , NULL);
   os_timer_setfn(&spi_timer_t, spi_timer , NULL);
   os_timer_arm(&spi_timer_t,50,0);
 
