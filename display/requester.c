@@ -29,8 +29,14 @@ typedef enum {
   LINE_LF,
   HEADER_LINE,
   END_HEADER_CR,
+  LENGTH, // chunked transfer encoding
+  LENGTH_CR,
+  IN_CHUNK,
+  CHUNK_CR,
+  CHUNK_LF,
   IN_BODY,
   IN_ERROR,
+  NOOP,
 } e_response_state_t;
 
 typedef struct {
@@ -44,7 +50,10 @@ typedef struct {
   // resource requested on host
   const char* pch_resource;
   // any data to append to request (e.g. post data)
-  const char* pch_data;
+  uint16_t ui_data;
+  const uint8_t* pch_data;
+  // method to use, e.g. GET, POST
+  const char* pch_method;
   // callback for status updates on process
   requester_status_callback_t f_status;
   // callback when response headers are consumed
@@ -59,7 +68,13 @@ typedef struct {
   uint32_t ui_line_buffer;
   char pch_line_buffer[MAX_HEADER_LENGTH];
   // response code extracted from status line of response
-  uint32_t ui_response_code;
+  uint16_t ui_response_code;
+  // content length of response, or if b_chunked size of chunk
+  int32_t i_response_length;
+  // chunked transfer from server
+  bool b_chunked;
+  // headers to append to request
+  requester_headers_t* s_req_headers;
 } requester_context_t;
 
 #define STATUS(c) ((requester_context_t*)c->reverse)->e_status
@@ -88,6 +103,9 @@ bool ICACHE_FLASH_ATTR request(const char* const pch_host,
                                const uint16_t ui_port,
                                const char* const pch_resource,
                                requester_cookies_t* const s_cookies,
+                               const uint8_t* const pch_data,
+                               uint16_t ui_data,
+                               requester_headers_t* s_req_headers,
                                const requester_status_callback_t f_status,
                                const requester_header_callback_t f_header,
                                const requester_response_callback_t f_response,
@@ -121,6 +139,12 @@ bool ICACHE_FLASH_ATTR request(const char* const pch_host,
   s_context.s_jar = s_cookies;
   s_context.e_response_state = STATUS_LINE;
   s_context.ctx = ctx;
+  s_context.pch_data = pch_data;
+  s_context.ui_data = ui_data;
+  // hard code the request method based on whether messagae body is
+  // present
+  s_context.pch_method = pch_data ? "POST" : "GET";
+  s_context.s_req_headers = s_req_headers;
 
   espconn_regist_connectcb(&s_requester_conn,
                            (espconn_connect_callback)connectcb);
@@ -155,9 +179,21 @@ dnscb(const char *name, ip_addr_t *ipaddr, espconn_t *conn) {
   }
 }
 
-#define REQUEST_BUFFER_SIZE 500
-LOCAL const char* const pch_request = "GET %s HTTP/1.1\r\nHost: %s\r\n";
-LOCAL const char* const pch_cookie = "Cookie: ";
+#define MEM_ERROR                                               \
+  ctx->f_status(ctx->ctx, REQ_OUT_OF_MEM);                      \
+  ctx->e_status = CLOSE_CONNECTION;                             \
+  system_os_post(requester_TaskPrio, 0, (uintptr_t)pespconn);   \
+  return;
+
+#define REQUEST_BUFFER_SIZE 1024
+LOCAL const char* const pch_request =
+  "%s %s HTTP/1.1\r\n"
+  "Host: %s\r\n"
+  "Accept-Encoding: identity\r\n"
+  "Accept: */*\r\n"
+  "User-Agent: esp8622/0.1\r\n"
+  "Connection: close\r\n"
+  ;
 
 LOCAL void ICACHE_FLASH_ATTR
 requester_Task(os_event_t *events) {
@@ -168,8 +204,8 @@ requester_Task(os_event_t *events) {
 
   switch (ctx->e_status) {
   case OPEN_CONNECTION:
-    // set buffer to 4KiB
-    if (!espconn_secure_set_size(0x01, 0x1000)) {
+    // set ssl client buffer to 2KiB
+    if (!espconn_secure_set_size(0x01, 0x0800)) {
       os_printf("failed to set buffer size\n");
     }
     ctx->f_status(ctx->ctx,
@@ -177,29 +213,72 @@ requester_Task(os_event_t *events) {
                   REQ_CONN_CONNECTED : REQ_CONN_FAIL);
     break;
   case SEND_REQUEST:
-    i = os_sprintf(ch_buffer, pch_request, ctx->pch_resource, ctx->pch_host);
+    // format request line
+    i = os_sprintf(ch_buffer,
+                   pch_request,
+                   ctx->pch_method,
+                   ctx->pch_resource,
+                   ctx->pch_host);
+    // add cookies
     for (int j = 0; ctx->s_jar && j < ctx->s_jar->ui_size; j++) {
-      // "Cookie: name=value\r\n"
+      // "Cookie: name=value[; name=value]\r\n"
+      if (j == 0) {
+        if (i + 8 <= REQUEST_BUFFER_SIZE) {
+          i += os_sprintf(ch_buffer + i, "Cookie: ");
+        } else {
+          MEM_ERROR;
+        }
+      } else {
+        if (i + 2 <= REQUEST_BUFFER_SIZE) {
+        ch_buffer[i++] = ';';
+        ch_buffer[i++] = ' ';
+        } else {
+          MEM_ERROR;
+        }
+      }
       if (i +
-          os_strlen(pch_cookie) +
           os_strlen(ctx->s_jar->s_cookies[j].pch_name) +
           os_strlen(ctx->s_jar->s_cookies[j].pch_value) +
-          3 <= REQUEST_BUFFER_SIZE) {
-        os_strcpy(ch_buffer + i, pch_cookie);
-        i += os_strlen(pch_cookie);
-        os_strcpy(ch_buffer + i, ctx->s_jar->s_cookies[j].pch_name);
-        i += os_strlen(ctx->s_jar->s_cookies[j].pch_name);
-        ch_buffer[i++] = '=';
-        os_strcpy(ch_buffer + i, ctx->s_jar->s_cookies[j].pch_value);
-        i += os_strlen(ctx->s_jar->s_cookies[j].pch_value);
+          1 <= REQUEST_BUFFER_SIZE) {
+        i += os_sprintf(ch_buffer + i,
+                        "%s=%s",
+                        ctx->s_jar->s_cookies[j].pch_name,
+                        ctx->s_jar->s_cookies[j].pch_value);
+      } else {
+        MEM_ERROR;
+      }
+    }
+    if (ctx->s_jar->ui_size) {
+      if (i + 2 <= REQUEST_BUFFER_SIZE) {
         ch_buffer[i++] = '\r';
         ch_buffer[i++] = '\n';
       } else {
-        // space error
-        ctx->f_status(ctx->ctx, REQ_OUT_OF_MEM);
-        ctx->e_status = CLOSE_CONNECTION;
-        system_os_post(requester_TaskPrio, 0, (uintptr_t)pespconn);
-        return;
+        MEM_ERROR;
+      }
+    }
+    // additional headers
+    for (int j = 0;
+         ctx->s_req_headers && j < ctx->s_req_headers->ui_size; j++) {
+      // "name: value\r\n"
+      if (i +
+          os_strlen(ctx->s_req_headers->s_headers[j].pch_name) +
+          os_strlen(ctx->s_req_headers->s_headers[j].pch_value) +
+          4 <= REQUEST_BUFFER_SIZE) {
+         i += os_sprintf(ch_buffer + i,
+                        "%s: %s\r\n",
+                        ctx->s_req_headers->s_headers[j].pch_name,
+                        ctx->s_req_headers->s_headers[j].pch_value);
+      } else {
+        MEM_ERROR;
+      }
+    }
+    // content length
+    if (ctx->pch_data && ctx->ui_data) {
+      // "Content-Length: xxxxx\r\n"
+      if (i + 23 <= REQUEST_BUFFER_SIZE) {
+        i += os_sprintf(ch_buffer + i, "Content-Length: %d\r\n", ctx->ui_data);
+      } else {
+        MEM_ERROR;
       }
     }
     // crlf
@@ -207,11 +286,16 @@ requester_Task(os_event_t *events) {
       ch_buffer[i++] = '\r';
       ch_buffer[i++] = '\n';
     } else {
-      // space error
-      ctx->f_status(ctx->ctx, REQ_OUT_OF_MEM);
-      ctx->e_status = CLOSE_CONNECTION;
-      system_os_post(requester_TaskPrio, 0, (uintptr_t)pespconn);
-      return;
+      MEM_ERROR;
+    }
+    // message body
+    if (ctx->pch_data && ctx->ui_data) {
+      if (i + ctx->ui_data <= REQUEST_BUFFER_SIZE) {
+        os_memcpy(ch_buffer + i, ctx->pch_data, ctx->ui_data);
+        i += ctx->ui_data;
+      } else {
+        MEM_ERROR;
+      }
     }
     if (espconn_secure_send(pespconn, (uint8_t*)ch_buffer, i) != 0) {
       ctx->f_status(ctx->ctx, REQ_CONN_FAIL);
@@ -267,42 +351,66 @@ LOCAL bool ICACHE_FLASH_ATTR process_status_line(requester_context_t *ctx) {
 }
 
 LOCAL bool ICACHE_FLASH_ATTR process_header_line(requester_context_t *ctx) {
-  char* colon = strnchr(ctx->pch_line_buffer, ':', ctx->ui_line_buffer);
-  if (colon) {
-    *colon = '\0';
-    if (os_strcmp("Set-Cookie", ctx->pch_line_buffer) == 0) {
-      uint32_t len = ctx->ui_line_buffer - (colon - ctx->pch_line_buffer);
-      if (len > 0) {
-        do {
-          len--;
-          colon++;
-        } while(len > 0 && *colon == ' ');
-        char* cookie_name = colon;
-        char* cookie_name_end = colon;
-        while (*cookie_name_end != '=' && len > 0) {
-          cookie_name_end++;
-          len--;
-        }
-        if (len > 0) {
-          len--;
+  if (strnchr(ctx->pch_line_buffer, ':', ctx->ui_line_buffer)) {
+    // todo, update to allow for multiple cookies in a
+    // set-cookie header and quoted cookie values.
+    if (ctx->ui_line_buffer >= 12 &&
+        os_strncmp("Set-Cookie: ", ctx->pch_line_buffer, 12) == 0) {
+      char* cookie_name = ctx->pch_line_buffer + 12;
+      char* cookie_name_end = ctx->pch_line_buffer + 12;
+      uint32_t len = ctx->ui_line_buffer - 12;
+      // allow for empty cookie names
+      while (len > 0 && *cookie_name_end != '=') {
+        cookie_name_end++;
+        len--;
+      }
+      // require equals
+      if (*cookie_name_end == '=') {
           char* cookie_value = cookie_name_end + 1;
-          char* cookie_value_end = cookie_value;
-          while (*cookie_value_end != ' ' &&
-                 *cookie_value_end != ';' &&
-                 len > 0) {
-            cookie_value_end++;
+          char* cookie_value_end = cookie_name_end + 1;
+          if (len) {
             len--;
+            while (len > 0 &&
+                   *cookie_value_end != ' ' &&
+                   *cookie_value_end != ';') {
+              cookie_value_end++;
+              len--;
+            }
           }
-          *cookie_name_end = '\0';
-          if (len > 0) {
-            *cookie_value_end = '\0';
-          }
+          // save cookie
           requester_cookie_add(ctx->s_jar,
                                cookie_name,
                                cookie_name_end - cookie_name,
                                cookie_value,
                                cookie_value_end - cookie_value);
-        }
+      } else {
+        // invalid header
+        return false;
+      }
+    }
+    if (ctx->ui_line_buffer > 16 &&
+        os_strncmp("Content-Length: ", ctx->pch_line_buffer, 16) == 0) {
+      // enforce C-string
+      ctx->pch_line_buffer[ctx->ui_line_buffer] = '\0';
+      char* ptr_end = NULL;
+      uint16_t ui_content_length = strtol(ctx->pch_line_buffer + 16,
+                                          &ptr_end, 10);
+      if (!ptr_end || ptr_end == ctx->pch_line_buffer + 16) {
+        // did not read any digits
+        return false;
+      }
+      ctx->i_response_length = ui_content_length;
+    }
+    if (ctx->ui_line_buffer >= 19 &&
+        os_strncmp("Transfer-Encoding: ",
+                   ctx->pch_line_buffer, 19) == 0) {
+      ctx->pch_line_buffer[ctx->ui_line_buffer] = '\0';
+      // todo, support combination "Transfer-Encoding: indentity, chunked"
+      if (os_strcmp("chunked", ctx->pch_line_buffer + 19) == 0) {
+        ctx->b_chunked = true;
+      } else {
+        // unsupported value
+        return false;
       }
     }
     return true;
@@ -326,7 +434,7 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
 
   os_timer_arm(&timeout_timer_t, 500, 0);
 
-  while (len) {
+  while (len || ctx->e_response_state == IN_ERROR) {
     switch (ctx->e_response_state) {
     case STATUS_LINE   :
       if (*pdata == '\r') {
@@ -371,7 +479,7 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
       break;
     case END_HEADER_CR :
       if (*pdata == '\n') {
-        ctx->e_response_state = IN_BODY;
+        ctx->e_response_state = ctx->b_chunked ? LENGTH : IN_BODY;
         os_memset(ctx->pch_line_buffer, 0x00, MAX_HEADER_LENGTH);
         ctx->ui_line_buffer = 0;
         if (!ctx->f_header(ctx->ctx, ctx->ui_response_code)) {
@@ -381,17 +489,93 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
         ctx->e_response_state = IN_ERROR;
       }
       break;
+    case LENGTH        :
+      if (*pdata == '\r') {
+        ctx->e_response_state = LENGTH_CR;
+        ctx->pch_line_buffer[ctx->ui_line_buffer] = '\0';
+      } else {
+        ctx->pch_line_buffer[ctx->ui_line_buffer] = *pdata;
+        ctx->ui_line_buffer++;
+      }
+      break;
+    case LENGTH_CR     :
+      if (*pdata == '\n') {
+        char *ptr_end = NULL;
+        long int i = strtol(ctx->pch_line_buffer, &ptr_end, 16);
+        if (!ptr_end || ptr_end == ctx->pch_line_buffer) {
+          ctx->e_response_state = IN_ERROR;
+        } else {
+          ctx->e_response_state = IN_CHUNK;
+          ctx->i_response_length = i;
+          if (i == 0) {
+            STATUS(conn) = CLOSE_CONNECTION;
+            system_os_post(requester_TaskPrio, 0, (uintptr_t)conn);
+            ctx->e_response_state = NOOP;
+            return;
+          }
+        }
+      } else {
+        ctx->e_response_state = IN_ERROR;
+      }
+      break;
+    case IN_CHUNK      :
+      // remainder of chunk is handled by application
+      if (len >= ctx->i_response_length) {
+        if (ctx->f_response(ctx->ctx, pdata, ctx->i_response_length)) {
+          pdata += (ctx->i_response_length - 1);
+          len -= (ctx->i_response_length - 1);
+          ctx->i_response_length = 0;
+          ctx->e_response_state = CHUNK_CR;
+        } else {
+          ctx->e_response_state = IN_ERROR;
+        }
+      } else {
+        if (ctx->f_response(ctx->ctx, pdata, len)) {
+          ctx->i_response_length -= len;
+          pdata += len;
+          len = 0;
+          return;
+        } else {
+          ctx->e_response_state = IN_ERROR;
+        }
+      }
+      break;
+    case CHUNK_CR      :
+      if (*pdata == '\r') {
+        ctx->e_response_state = CHUNK_LF;
+      } else {
+        ctx->e_response_state = IN_ERROR;
+      }
+      break;
+    case CHUNK_LF      :
+      if (*pdata == '\n') {
+        ctx->e_response_state = LENGTH;
+        os_memset(ctx->pch_line_buffer, 0x00, MAX_HEADER_LENGTH);
+        ctx->ui_line_buffer = 0;
+      } else {
+        ctx->e_response_state = IN_ERROR;
+      }
+      break;
     case IN_BODY       :
       // remainder of buffer is handled by application
       if (ctx->f_response(ctx->ctx, pdata, len)) {
+        ctx->i_response_length -= len;
+        if (ctx->i_response_length <= 0) {
+          STATUS(conn) = CLOSE_CONNECTION;
+          system_os_post(requester_TaskPrio, 0, (uintptr_t)conn);
+          ctx->e_response_state = NOOP;
+        }
         return;
       }
       ctx->e_response_state = IN_ERROR;
-      // ! no break
+      break;
     case IN_ERROR      :
       os_printf("invalid response received\n");
       STATUS(conn) = CLOSE_CONNECTION;
       system_os_post(requester_TaskPrio, 0, (uintptr_t)conn);
+      ctx->e_response_state = NOOP;
+      return;
+    case NOOP:
       return;
     }
 
@@ -417,9 +601,9 @@ sentcb(espconn_t *conn) {
 void ICACHE_FLASH_ATTR
 requester_cookie_add(requester_cookies_t* jar,
                      char* const pch_name,
-                     const uint8_t ui_name_size,
+                     const uint16_t ui_name_size,
                      char* const pch_value,
-                     const uint8_t ui_value_size) {
+                     const uint16_t ui_value_size) {
   if (!jar) {
     return;
   }
@@ -462,6 +646,45 @@ void ICACHE_FLASH_ATTR requester_cookie_free(requester_cookies_t* jar) {
   os_free(jar->s_cookies);
   jar->s_cookies = NULL;
   os_free(jar);
+}
+
+void ICACHE_FLASH_ATTR
+requester_header_add(requester_headers_t* s_hdrs,
+                     char* const pch_name,
+                     const uint8_t ui_name_size,
+                     char* const pch_value,
+                     const uint8_t ui_value_size) {
+  if (!s_hdrs) {
+    return;
+  }
+  // create a header
+  s_hdrs->s_headers =
+    os_realloc(s_hdrs->s_headers,
+               sizeof(requester_headers_t) * (s_hdrs->ui_size + 1));
+  s_hdrs->s_headers[s_hdrs->ui_size].pch_name = os_zalloc(ui_name_size+1);
+  os_memcpy((char*)s_hdrs->s_headers[s_hdrs->ui_size].pch_name,
+            pch_name,
+            ui_name_size);
+  s_hdrs->s_headers[s_hdrs->ui_size].pch_value = os_zalloc(ui_value_size+1);
+  os_memcpy((char*)s_hdrs->s_headers[s_hdrs->ui_size].pch_value,
+            pch_value,
+            ui_value_size);
+  s_hdrs->ui_size++;
+}
+
+void ICACHE_FLASH_ATTR requester_header_free(requester_headers_t* s_hdrs) {
+  if (!s_hdrs) {
+    return;
+  }
+  for (int i = 0; i < s_hdrs->ui_size; i++) {
+    os_free((char*)s_hdrs->s_headers[i].pch_name);
+    os_free((char*)s_hdrs->s_headers[i].pch_value);
+    s_hdrs->s_headers[i].pch_name = NULL;
+    s_hdrs->s_headers[i].pch_value = NULL;
+  }
+  os_free(s_hdrs->s_headers);
+  s_hdrs->s_headers = NULL;
+  os_free(s_hdrs);
 }
 
 LOCAL void ICACHE_FLASH_ATTR timeout_timer(void *arg) {
