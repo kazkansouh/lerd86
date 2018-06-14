@@ -1,6 +1,5 @@
 #include <ets_sys.h>
 #include <osapi.h>
-#include <gpio.h>
 #include <os_type.h>
 #include <driver/uart.h>
 #include <user_interface.h>
@@ -8,17 +7,20 @@
 #include <mem.h>
 #include "http.h"
 #include "requester.h"
-#include <driver/spi_interface.h>
 #include <strings.h>
+#include "led.h"
 
-LOCAL const int pin_station = 5;
-LOCAL const int pin_ap = 4;
+#define LED_POWERON   led_display(0xFF, LED_PULSE, 100, 0xFF)
+#define LED_AP        led_display(0xFF, LED_FLASH, 100, 0xFF)
+#define LED_CONNECTED led_display(0x7E, LED_PULSE, 10, 0xFF)
+#define LED_READY     led_display(0x3C, LED_PULSE, 5, 0xFF)
+
+#define LED_ERROR     led_display(0x55, LED_FLASH, 250, 0xFF)
 
 LOCAL const char ssid[] = "EConfig";
 
 LOCAL os_timer_t error_timer_t;
 LOCAL os_timer_t request_timer_t;
-LOCAL os_timer_t spi_timer_t;
 
 LOCAL requester_cookies_t s_jar = {NULL, 0};
 
@@ -74,24 +76,6 @@ void ICACHE_FLASH_ATTR request_timer(void *arg) {
   }
 }
 
-LOCAL uint32_t spi_var = 0x01;
-
-void ICACHE_FLASH_ATTR spi_timer(void *arg) {
-  spi_var <<= 1;
-  spi_var %= 0x100;
-
-  if (!spi_var) {
-    spi_var = 1;
-  }
-  SpiData d = {0,0,0,0,&spi_var,1};
-
-  if (SPIMasterSendData(SpiNum_HSPI, &d) == -1) {
-    os_printf("spi failed to send");
-  } else {
-    os_timer_arm(&spi_timer_t,50,0);
-  }
-}
-
 void ICACHE_FLASH_ATTR connectStation(const char* ssid, const uint8 ssid_len,
                                       const char* pass, const uint8 pass_len) {
   struct station_config stationConf;
@@ -116,7 +100,7 @@ void ICACHE_FLASH_ATTR connectAP() {
   struct softap_config apConf;
   os_printf("starting AP\n");
   // set leds
-  gpio_output_set((1 << pin_ap), (1 << pin_station), 0, 0);
+  LED_AP;
   os_timer_disarm(&request_timer_t);
 
   wifi_set_opmode( SOFTAP_MODE );
@@ -230,17 +214,17 @@ void wifi_handle_event_cb(System_Event_t *evt) {
   case EVENT_STAMODE_CONNECTED:
     // wait to get IP address
     os_timer_arm(&error_timer_t,20000,0);
-    gpio_output_set(0, (1 << pin_station) | (1 << pin_ap), 0, 0);
+    LED_CONNECTED;
     break;
   case EVENT_STAMODE_GOT_IP:
     // we are good to start services here
-    gpio_output_set((1 << pin_station), 0, 0, 0);
+    LED_READY;
     // reinitilise http server with new connection
     http_init(80);
     os_timer_arm(&request_timer_t,1000,0);
     break;
   case EVENT_STAMODE_DISCONNECTED:
-    gpio_output_set(0, (1 << pin_station), 0, 0);
+    LED_POWERON;
     // todo, disconnected from base startion for over some time, start
     // in softap mode.
     break;
@@ -250,7 +234,7 @@ void wifi_handle_event_cb(System_Event_t *evt) {
     break;
   case EVENT_OPMODE_CHANGED:
     if (evt->event_info.opmode_changed.new_opmode == STATION_MODE) {
-      gpio_output_set(0, (1 << pin_station) | (1 << pin_ap), 0, 0);
+      LED_POWERON;
       os_printf("old mode: %d\n", evt->event_info.opmode_changed.old_opmode);
       wifi_station_disconnect();
       wifi_station_connect();
@@ -265,32 +249,12 @@ void wifi_handle_event_cb(System_Event_t *evt) {
 
 void ICACHE_FLASH_ATTR user_init() {
 
-  // init gpio sussytem
-  gpio_init();
-
-  // configure GPIO4 and GPIO5 pins for output
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U, FUNC_GPIO5);
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U, FUNC_GPIO4);
-  gpio_output_set(0, 0, (1 << pin_station) | (1 << pin_ap), 0);
-
   uart_init(BIT_RATE_115200);
 
   // hook into wifi callbacks
   wifi_set_event_handler_cb(&wifi_handle_event_cb);
 
   os_printf("\nSDK version: %s \n", system_get_sdk_version());
-
-  // configure hspi, first set pin functions, then init HSPI
-  WRITE_PERI_REG(PERIPHS_IO_MUX, 0x105);
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, 2);
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTCK_U, 2);
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTMS_U, 2);
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDO_U, 2);
-  SpiAttr attr = { SpiMode_Master,
-                   SpiSubMode_0,
-                   SpiSpeed_8MHz,
-                   SpiBitOrder_MSBFirst };
-  SPIInit(SpiNum_HSPI, &attr);
 
   // initialise handlers for http server
   http_register_init();
@@ -302,8 +266,10 @@ void ICACHE_FLASH_ATTR user_init() {
   // setup timers
   os_timer_setfn(&error_timer_t, error_timer , NULL);
   os_timer_setfn(&request_timer_t, request_timer , NULL);
-  os_timer_setfn(&spi_timer_t, spi_timer , NULL);
-  os_timer_arm(&spi_timer_t,50,0);
+
+  // setup leds
+  led_init();
+  LED_POWERON;
 
   // start wifi connection process
   wifi_set_opmode( STATION_MODE );
