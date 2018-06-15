@@ -14,6 +14,7 @@
 #include <osapi.h>
 #include <strings.h>
 #include <user_interface.h>
+#include <stdlib.h>
 
 #define TIMEOUT 60*5
 #define MAX_HANDLERS 10
@@ -214,6 +215,36 @@ http_request_context_set_resource(http_request_context_t* ctx,
   os_memcpy(ctx->pch_resource, pch_resource, ui_size);
 }
 
+LOCAL void ICACHE_FLASH_ATTR
+http_urldecode(char* pch_url) {
+  int i = 0;
+  char* ptr = pch_url;
+
+  while (*ptr != '\0') {
+    if (*ptr != '%') {
+      pch_url[i++] = *(ptr++);
+    } else {
+      char val[3] = {0,0,0};
+
+      if ((val[0] = *(ptr+1)) != '\0' &&
+          (val[1] = *(ptr+2)) != '\0') {
+        char* end = NULL;
+        long int x = strtol(val, &end, 16);
+        if (end != val+2) {
+          // invalid hex value
+          break;
+        }
+        pch_url[i++] = x & 0xFF;
+        ptr += 3;
+      } else {
+        // malformed
+        break;
+      }
+    }
+  }
+  pch_url[i] = '\0';
+}
+
 void ICACHE_FLASH_ATTR
 http_request_context_add_parameter(http_request_context_t* ctx,
                                    char* pch_param,
@@ -230,6 +261,7 @@ http_request_context_add_parameter(http_request_context_t* ctx,
   os_memcpy(ctx->s_query[ctx->ui_query_size].pch_value,
             pch_value,
             ui_value_size);
+  http_urldecode(ctx->s_query[ctx->ui_query_size].pch_value);
   ctx->ui_query_size++;
 }
 
