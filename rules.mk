@@ -38,7 +38,7 @@ clean-all: clean
 	for f in $(REC_TARGETS) ; do make -C $$(dirname $$f) clean-all ; done
 
 clean:
-	rm -f $(PROJECT_NAME)$(EXE_EXTENSION) $(OBJECTS) $(PROJECT_NAME)$(EXE_EXTENSION)-0x00000.bin $(PROJECT_NAME)$(EXE_EXTENSION)-0x10000.bin flash init-flash
+	rm -f $(PROJECT_NAME)$(EXE_EXTENSION) $(OBJECTS) $(PROJECT_NAME)$(EXE_EXTENSION)-0x00000.bin $(PROJECT_NAME)$(EXE_EXTENSION)-0x10000.bin flash init-flash $(ADDITIONAL_CLEAN)
 
 test: flash
 	gtkterm --speed $(BAUD_RATE) --port /dev/ttyUSB0
