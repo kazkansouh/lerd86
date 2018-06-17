@@ -39,16 +39,28 @@ enum server_task_ids {
   DISCONNECT_CLIENT    = 0x00,
   ERROR_404,
   APP_SERVICED,
+  SEND_DATA,
 };
 
 LOCAL char*          pch_handlers[MAX_HANDLERS];
 LOCAL http_handler_t pf_handlers [MAX_HANDLERS];
 
+// each accepted connection will have the below data assigned.
+typedef struct http_internal_t {
+  // callback that will provide the response
+  http_handler_t f_handler;
+  // below are used for sending the response (as it might be larger
+  // than a packet)
+  const uint8_t* pch_data;
+  uint16_t ui_data_len;
+  const uint8_t* pch_data_to_free;
+} http_internal_t;
+
 LOCAL
-const char* pch_msg_error = HTTP_RESP_HEADER(400, text/html)
+const char* pch_msg_error = HTTP_RESP_HEADER(400, text/html, 77)
                             HTML_DOC("ERROR", "<h1>Error 404</h1>");
 
-  void ICACHE_FLASH_ATTR http_init(uint16_t ui_port) {
+void ICACHE_FLASH_ATTR http_init(uint16_t ui_port) {
   system_os_task(server_Task,
                  server_TaskPrio,
                  server_TaskQueue,
@@ -75,6 +87,17 @@ LOCAL void ICACHE_FLASH_ATTR
 connectcb(espconn_t *conn) {
   conn->reverse =
     (http_request_context_t *)os_zalloc(sizeof(http_request_context_t));
+  if (!conn->reverse) {
+    // out of mem
+    return;
+  }
+  ((http_request_context_t *)conn->reverse)->ps_internal =
+    (http_internal_t*)os_zalloc(sizeof(http_internal_t));
+  if (!((http_request_context_t *)conn->reverse)->ps_internal) {
+    // out of mem
+    os_free(conn->reverse);
+    return;
+  }
   espconn_regist_recvcb(conn, (espconn_recv_callback)receivecb);
   espconn_regist_disconcb(conn, (espconn_connect_callback)disconnectcb);
   espconn_regist_sentcb(conn, (espconn_sent_callback)sentcb);
@@ -136,7 +159,7 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
           if (strncasecmp(pch_handlers[i],
                           ctx->pch_resource,
                           os_strlen(pch_handlers[i])) == 0) {
-            ctx->f_handler = pf_handlers[i];
+            ctx->ps_internal->f_handler = pf_handlers[i];
             system_os_post(server_TaskPrio, APP_SERVICED, (uintptr_t)conn);
             return;
           }
@@ -156,7 +179,12 @@ disconnectcb(espconn_t *conn) {
 
 LOCAL void ICACHE_FLASH_ATTR
 sentcb(espconn_t *conn) {
-  system_os_post(server_TaskPrio, DISCONNECT_CLIENT, (uintptr_t)conn);
+  http_request_context_t *ctx = (http_request_context_t*)conn->reverse;
+  if (ctx->ps_internal->ui_data_len) {
+    system_os_post(server_TaskPrio, SEND_DATA, (uintptr_t)conn);
+  } else {
+    system_os_post(server_TaskPrio, DISCONNECT_CLIENT, (uintptr_t)conn);
+  }
 }
 
 LOCAL void ICACHE_FLASH_ATTR
@@ -166,12 +194,36 @@ server_Task(os_event_t *events) {
 
   switch (events->sig) {
   case DISCONNECT_CLIENT:
+    if (ctx->ps_internal->pch_data_to_free) {
+      os_free((void*)ctx->ps_internal->pch_data_to_free);
+      ctx->ps_internal->pch_data_to_free = NULL;
+    }
     espconn_disconnect(pespconn);
     break;
+  case SEND_DATA:
+    if (ctx->ps_internal->pch_data && ctx->ps_internal->ui_data_len) {
+      uint16_t ui_send_len = 512;
+      if (ctx->ps_internal->ui_data_len < ui_send_len) {
+        ui_send_len = ctx->ps_internal->ui_data_len;
+      }
+      if (espconn_send(pespconn,
+                       (uint8_t*)ctx->ps_internal->pch_data,
+                       ui_send_len)
+          == ESPCONN_OK) {
+        ctx->ps_internal->ui_data_len -= ui_send_len;
+        ctx->ps_internal->pch_data += ui_send_len;
+      } else {
+        system_os_post(server_TaskPrio, DISCONNECT_CLIENT, events->par);
+      }
+    } else {
+      system_os_post(server_TaskPrio, DISCONNECT_CLIENT, events->par);
+    }
+    break;
   case APP_SERVICED:
-    if (ctx->f_handler(pespconn, ctx)) {
+    if (ctx->ps_internal->f_handler(pespconn, ctx)) {
       break;
     }
+    // !! no break
   case ERROR_404:
   default:
     // send error
@@ -299,4 +351,66 @@ http_request_context_lookup(http_request_context_t* ctx,
     }
   }
   return NULL;
+}
+
+LOCAL size_t ICACHE_FLASH_ATTR
+http_header_len(http_header_t* ps_headers,
+                uint8_t ui_headers_len) {
+  size_t i = 0;
+  while (ui_headers_len--) {
+    i += 4; // ": " and "\r\n"
+    i += os_strlen(ps_headers->pch_param);
+    i += os_strlen(ps_headers->pch_value);
+    ps_headers++;
+  }
+  return i;
+}
+
+int8_t ICACHE_FLASH_ATTR
+http_send_response(espconn_t* const conn,
+                   const uint16_t ui_response_code,
+                   const char* const pch_content_type,
+                   http_header_t* ps_headers,
+                   uint8_t ui_headers_len,
+                   const char* const pch_payload,
+                   const uint16_t ui_payload_len,
+                   const bool b_free_payload) {
+  // construct a header and send
+  char* ch_buffer = (char*)os_malloc(14 + // response line
+                                     // if content is present, include
+                                     //   "Content-Length: xxxxxx\r\n"
+                                     //   "Content-Type: \r\n"
+                                     (ui_payload_len && pch_payload ?
+                                      40 + os_strlen(pch_content_type) : 0) +
+                                     http_header_len(ps_headers,
+                                                     ui_headers_len) +
+                                     3); // "\r\n\0"
+  size_t i = os_sprintf(ch_buffer, "HTTP/1.1 %d\r\n", ui_response_code);
+  if (ui_payload_len && pch_payload) {
+    i += os_sprintf(ch_buffer + i,
+                    "Content-Length: %d\r\n"
+                    "Content-Type: %s\r\n",
+                    ui_payload_len,
+                    pch_content_type);
+  }
+  while (ui_headers_len--) {
+    i += os_sprintf(ch_buffer + i,
+                    "%s: %s\r\n",
+                    ps_headers->pch_param,
+                    ps_headers->pch_value);
+    ps_headers++;
+  }
+  i += os_sprintf(ch_buffer + i, "\r\n");
+  int8_t i_ret = espconn_send(conn, (uint8_t*)ch_buffer, i);
+  if (i_ret == ESPCONN_OK) {
+    http_request_context_t *ctx = (http_request_context_t*)conn->reverse;
+    ctx->ps_internal->pch_data = (const uint8_t*)pch_payload;
+    ctx->ps_internal->ui_data_len = ui_payload_len;
+    if (b_free_payload) {
+      ctx->ps_internal->pch_data_to_free = (const uint8_t*)pch_payload;
+    } else {
+      ctx->ps_internal->pch_data_to_free = NULL;
+    }
+  }
+  return i_ret;
 }

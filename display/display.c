@@ -415,7 +415,6 @@ connectAP() {
 }
 
 const char* const msg_welcome =
-  HTTP_RESP_HEADER(200, text/html)
   HTML_STYLE_DOC(
     "ESP8622",css,
     "<h1>Hello I am ESP!</h1>"
@@ -423,7 +422,6 @@ const char* const msg_welcome =
     "<a href=\"wifi\">Configure WiFi Details</a><br/>"
     "<a href=\"pg\">Configure PureGym</a>");
 const char* const msg_setwifi_page =
-  HTTP_RESP_HEADER(200, text/html)
   HTML_STYLE_DOC(
     "ESP8622 SetWiFi Details",css,
     "<form method=\"get\">"
@@ -431,26 +429,26 @@ const char* const msg_setwifi_page =
     "Password: <input type=\"text\" name=\"password\"></input><br>"
     "<input type=\"submit\"></input></form>");
 const char* const msg_info_page =
-  HTTP_RESP_HEADER(200, text/html)
   HTML_STYLE_DOC(
     "ESP8622",css,
     "<h1>System Info</h1>"
     "SDK Info:<pre>%s</pre><br/>"
     "Free heap: %d bytes");
 const char* const msg_css =
-  HTTP_RESP_HEADER(200, text/css)
   "body {"
     "background: black;"
     "color: #80c0c0"
   "}";
 const char const msg_puregym_page[] =
-  HTTP_RESP_HEADER(200, text/html)
   HTML_STYLE_DOC(
     "ESP8622 PureGym Login",css,
     "<form method=\"get\">"
     "E-Mail: <input type=\"text\" name=\"email\" value=\"%s\"></input><br>"
     "PIN: <input type=\"text\" name=\"pin\" value=\"%s\"></input><br>"
     "<input type=\"submit\"></input></form>");
+
+const char* const ct_html = "text/html";
+const char* const ct_css = "text/css";
 
 /* handler that fails (results in 404 error */
 bool ICACHE_FLASH_ATTR fail_handler(struct espconn* conn,
@@ -461,13 +459,22 @@ bool ICACHE_FLASH_ATTR fail_handler(struct espconn* conn,
 /* default handler, used to write static content */
 bool ICACHE_FLASH_ATTR root_handler(struct espconn* conn,
                                     struct http_request_context_t* ctx) {
-  const char* ptr = msg_welcome;
+  const char* ptr_data = msg_welcome;
+  const char* ptr_ct = ct_html;
   if (strcasecmp(ctx->pch_resource, "/css") == 0) {
-    ptr = msg_css;
+    ptr_data = msg_css;
+    ptr_ct = ct_css;
   }
-  int x = espconn_send(conn, (uint8*)ptr, os_strlen(ptr));
-  if (x != 0) {
-    os_printf("failed to write to connection: %d\n", x);
+  int8_t i = http_send_response(conn,
+                                200,
+                                ptr_ct,
+                                NULL,
+                                0,
+                                ptr_data,
+                                os_strlen(ptr_data),
+                                false);
+  if (i != ESPCONN_OK) {
+    os_printf("failed to write to connection: %d\n", i);
   }
   return true;
 }
@@ -484,7 +491,17 @@ bool ICACHE_FLASH_ATTR wifi_handler(struct espconn* conn,
                    pch_pass, os_strlen(pch_pass));
     return root_handler(conn, ctx);
   } else {
-    espconn_send(conn, (uint8*)msg_setwifi_page, os_strlen(msg_setwifi_page));
+    int8_t i = http_send_response(conn,
+                                  200,
+                                  ct_html,
+                                  NULL,
+                                  0,
+                                  msg_setwifi_page,
+                                  os_strlen(msg_setwifi_page),
+                                  false);
+    if (i != ESPCONN_OK) {
+      os_printf("failed to write to connection: %d\n", i);
+    }
     return true;
   }
 }
@@ -492,12 +509,22 @@ bool ICACHE_FLASH_ATTR wifi_handler(struct espconn* conn,
 /* displays system info */
 bool ICACHE_FLASH_ATTR info_handler(struct espconn* conn,
                                     struct http_request_context_t* ctx) {
-  char ch_buffer[500];
-  int i = os_sprintf(ch_buffer,
-                     msg_info_page,
-                     system_get_sdk_version(),
-                     system_get_free_heap_size());
-  espconn_send(conn, (uint8*)ch_buffer, i);
+  char* ch_buffer = (char*)os_malloc(500);
+  size_t len = os_sprintf(ch_buffer,
+                          msg_info_page,
+                          system_get_sdk_version(),
+                          system_get_free_heap_size());
+  int8_t i = http_send_response(conn,
+                                200,
+                                ct_html,
+                                NULL,
+                                0,
+                                (const char*)ch_buffer,
+                                len,
+                                true);
+  if (i != ESPCONN_OK) {
+    os_printf("failed to write to connection: %d\n", i);
+  }
   return true;
 }
 
@@ -525,12 +552,21 @@ bool ICACHE_FLASH_ATTR puregym_handler(struct espconn* conn,
     char* ch_buff = (char*)os_malloc(sizeof(msg_puregym_page)
                                      + email_len + pin_len + 1);
     if (ch_buff) {
-      size_t i = os_sprintf(ch_buff,
-                            msg_puregym_page,
-                            gs_params.pch_email,
-                            gs_params.pch_pin);
-      espconn_send(conn, (uint8*)ch_buff, i);
-      os_free(ch_buff);
+      size_t len = os_sprintf(ch_buff,
+                              msg_puregym_page,
+                              gs_params.pch_email,
+                              gs_params.pch_pin);
+      int8_t i = http_send_response(conn,
+                                    200,
+                                    ct_html,
+                                    NULL,
+                                    0,
+                                    (const char*)ch_buff,
+                                    len,
+                                    true);
+      if (i != ESPCONN_OK) {
+        os_printf("failed to write to connection: %d\n", i);
+      }
     } else {
       os_printf("memory allocation error\n");
       return false;
