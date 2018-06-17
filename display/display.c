@@ -15,7 +15,7 @@
 
 #define LED_POWERON   do {                      \
     gb_ready = false;                           \
-    led_display(0xFF, LED_PULSE, 25, 0x80);     \
+    led_display(0xFF, LED_PULSE, 10, 0x80);     \
   } while(0);
 #define LED_AP        do {                      \
     gb_ready = false;                           \
@@ -23,11 +23,11 @@
   } while(0);
 #define LED_CONNECTED do {                      \
     gb_ready = false;                           \
-    led_display(0x7E, LED_PULSE, 10, 0xFF);     \
+    led_display(0x7E, LED_PULSE, 10, 0x80);     \
   } while(0);
 #define LED_READY     do {                      \
     gb_ready = true;                            \
-    led_display(0x3C, LED_PULSE, 5, 0xFF);      \
+    led_display(0x3C, LED_PULSE, 10, 0x80);     \
   } while(0);
 
 #define LED_HTTP_CONN led_display(0x18, LED_PULSE, 5, 0xFF)

@@ -18,6 +18,12 @@
 #define PWM_0_OUT_IO_NUM 4
 #define PWM_0_OUT_IO_FUNC  FUNC_GPIO4
 
+#if !defined(LED_PULSE_LOWER_BOUND)
+// Define a lower bound on the pluse animation to avoid a large time
+// when the LEDs are dark. This depends on the specifc LEDs/circuit.
+ #define LED_PULSE_LOWER_BOUND 25
+#endif // !defined(LED_PULSE_LOWER_BOUND)
+
 LOCAL os_timer_t g_spi_timer_t;
 
 LOCAL uint32_t g_ui_value = 0xAA; // needs to be 32bit
@@ -51,7 +57,7 @@ void ICACHE_FLASH_ATTR spi_timer(void *arg) {
     break;
   case LED_PULSE:
     if (g_b_pulse_down) {
-      if (g_ui_brightness != 0) {
+      if (g_ui_brightness > LED_PULSE_LOWER_BOUND) {
         g_ui_brightness--;
       } else {
         g_b_pulse_down = false;
@@ -123,9 +129,9 @@ led_display(uint8_t  ui_value,
             uint8_t  ui_brightness) {
   os_timer_disarm(&g_spi_timer_t);
   g_ui_value             = ui_value;
+  g_b_pulse_down         = g_ui_flags & LED_PULSE ? g_b_pulse_down : true;
   g_ui_flags             = ui_mode;
   g_ui_speed             = ui_delay;
   g_ui_brightness_target = ui_brightness;
-  g_b_pulse_down         = true;
   os_timer_arm(&g_spi_timer_t,5,0);
 }
