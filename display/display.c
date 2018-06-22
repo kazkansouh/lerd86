@@ -12,6 +12,7 @@
 #include "stringutil.h"
 #include <stdlib.h>
 #include <spi_flash.h>
+#include <gpio.h>
 
 #define LED_POWERON   do {                      \
     gb_ready = false;                           \
@@ -35,12 +36,22 @@
 
 #define LED_ERROR     led_display(0x55, LED_FLASH, 500, 0xFF)
 
+// these two are missing from the "ets_sys.h" and included here for
+// clean compilation.
+void ets_isr_mask(int);
+void ets_isr_unmask(int);
+
 LOCAL const char gpch_ssid[] = "EConfig";
 
 LOCAL os_timer_t gs_error_timer;
 LOCAL os_timer_t gs_request_timer;
+LOCAL os_timer_t gs_button_timer;
 
 LOCAL bool gb_ready = false;
+LOCAL bool gb_button_hyst = false;
+
+LOCAL uint32_t gui_button_count = 0;
+LOCAL uint8_t gui_brightness = 0x80;
 
 LOCAL requester_cookies_t* gp_s_cookiejar = NULL;
 
@@ -277,7 +288,7 @@ members_response_cb(void* ctx,
     else
       ui_val = 0xFF;
 
-    led_display(ui_val, LED_NONE, 0, 0x80);
+    led_display(ui_val, LED_NONE, 0, gui_brightness);
 
     os_free(gs_scan_ctx.pch_token);
     gs_scan_ctx.pch_token = NULL;
@@ -650,6 +661,66 @@ LOCAL void ICACHE_FLASH_ATTR save_params() {
   }
 }
 
+LOCAL void ICACHE_FLASH_ATTR button_timer(void *arg) {
+  if (gb_button_hyst) {
+    // hysteresis timeout finished
+    gb_button_hyst = false;
+    // increment counter on button press
+    gui_button_count++;
+    // set timeout for action on button elapsed
+    os_timer_arm(&gs_button_timer, 250, 0);
+    // clear interrupt
+    uint16_t gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+    GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status);
+    // enable gpio interrupts
+    ETS_GPIO_INTR_ENABLE();
+  } else {
+    os_printf("button was pressed %d times\n", gui_button_count);
+    gui_button_count = 0;
+  }
+  switch (gui_button_count) {
+  case 0:
+    break;
+  case 1:
+    gui_brightness = 0xFF;
+    break;
+  case 2:
+    gui_brightness = 0x80;
+    break;
+  case 3:
+    gui_brightness = 0x20;
+    break;
+  case 4:
+  case 5:
+  case 6:
+  case 7:
+  case 8:
+  case 9:
+    gui_brightness = 0x0A;
+    break;
+  default:
+    gui_brightness = 0x00;
+    break;
+  }
+  if (gb_ready) {
+    led_display(LED_NONE, LED_BRIGHT, LED_NONE, gui_brightness);
+  }
+}
+
+
+void ICACHE_FLASH_ATTR gpio_isr(void* arg) {
+  // clear interrupt
+  uint16_t gpio_status = GPIO_REG_READ(GPIO_STATUS_ADDRESS);
+  GPIO_REG_WRITE(GPIO_STATUS_W1TC_ADDRESS, gpio_status);
+  // disable all interrupts on gpio pins
+  ETS_GPIO_INTR_DISABLE();
+
+  // mark in hysteresis
+  gb_button_hyst = true;
+  // set timeout for action on button elapsed
+  os_timer_arm(&gs_button_timer, 150, 0);
+}
+
 void ICACHE_FLASH_ATTR user_init() {
   uart_init(BIT_RATE_115200);
 
@@ -692,6 +763,7 @@ void ICACHE_FLASH_ATTR user_init() {
   // setup timers
   os_timer_setfn(&gs_error_timer, error_timer , NULL);
   os_timer_setfn(&gs_request_timer, request_timer , NULL);
+  os_timer_setfn(&gs_button_timer, button_timer , NULL);
 
   // setup leds
   led_init();
@@ -700,4 +772,21 @@ void ICACHE_FLASH_ATTR user_init() {
   // start wifi connection process
   wifi_set_opmode( STATION_MODE );
   os_printf("Connecting as station\n");
+
+  // setup interrupt on GPIO5
+  // get GPIO5 pin as GPIO5
+  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO5_U, FUNC_GPIO5);
+  // set GPIO as input mode
+  GPIO_DIS_OUTPUT(GPIO_ID_PIN(5));
+  // enable pullup
+  PIN_PULLUP_EN(PERIPHS_IO_MUX_GPIO5_U);
+  // disable all interrupts on gpio pins
+  ETS_GPIO_INTR_DISABLE();
+  // attach isr for gpio, second argument is parameter to pass to
+  // function
+  ETS_GPIO_INTR_ATTACH(gpio_isr, NULL);
+  // set interrupt on rising edge
+  gpio_pin_intr_state_set(GPIO_ID_PIN(5),GPIO_PIN_INTR_NEGEDGE);
+  // enable gpio interrupts
+  ETS_GPIO_INTR_ENABLE();
 }

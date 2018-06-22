@@ -14,7 +14,8 @@
 // rotate left or right leds
 #define LED_ROTATE_L 0x04
 #define LED_ROTATE_R 0x05
-
+// only set brightness of led
+#define LED_BRIGHT   0x06
 
 void led_init(void);
 void led_display(uint8_t  ui_value,

@@ -128,10 +128,12 @@ led_display(uint8_t  ui_value,
             uint32_t ui_delay,
             uint8_t  ui_brightness) {
   os_timer_disarm(&g_spi_timer_t);
-  g_ui_value             = ui_value;
-  g_b_pulse_down         = g_ui_flags & LED_PULSE ? g_b_pulse_down : true;
-  g_ui_flags             = ui_mode;
-  g_ui_speed             = ui_delay;
+  if (ui_mode != LED_BRIGHT) {
+    g_ui_value             = ui_value;
+    g_b_pulse_down         = g_ui_flags == LED_PULSE ? g_b_pulse_down : true;
+    g_ui_flags             = ui_mode;
+    g_ui_speed             = ui_delay;
+  }
   g_ui_brightness_target = ui_brightness;
   os_timer_arm(&g_spi_timer_t,5,0);
 }
