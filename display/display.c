@@ -14,6 +14,7 @@
 #include <spi_flash.h>
 #include <gpio.h>
 #include "beacon.h"
+#include "uconf.h"
 
 #define LED_POWERON   do {                      \
     gb_ready = false;                           \
@@ -115,6 +116,29 @@ LOCAL void ICACHE_FLASH_ATTR error_timer(void *arg) {
   os_printf("ERROR Timout\n");
   wifi_station_disconnect();
   connectAP();
+}
+
+/*
+ * uConf getters and setters
+ */
+LOCAL
+int ICACHE_FLASH_ATTR get_brightness() {
+  return gui_brightness;
+}
+
+LOCAL
+bool ICACHE_FLASH_ATTR set_brightness(int i_brightness) {
+  if (i_brightness < 0) {
+    i_brightness = 0;
+  }
+  if (i_brightness > 0xFF) {
+    i_brightness = 0xFF;
+  }
+  gui_brightness = i_brightness;
+  if (gb_ready) {
+    led_display(LED_NONE, LED_BRIGHT, LED_NONE, gui_brightness);
+  }
+  return true;
 }
 
 /*
@@ -685,13 +709,13 @@ LOCAL void ICACHE_FLASH_ATTR button_timer(void *arg) {
   case 0:
     break;
   case 1:
-    gui_brightness = 0xFF;
+    set_brightness(0xFF);
     break;
   case 2:
-    gui_brightness = 0x80;
+    set_brightness(0x80);
     break;
   case 3:
-    gui_brightness = 0x20;
+    set_brightness(0x20);
     break;
   case 4:
   case 5:
@@ -699,17 +723,13 @@ LOCAL void ICACHE_FLASH_ATTR button_timer(void *arg) {
   case 7:
   case 8:
   case 9:
-    gui_brightness = 0x0A;
+    set_brightness(0x0A);
     break;
   default:
-    gui_brightness = 0x00;
+    set_brightness(0x00);
     break;
   }
-  if (gb_ready) {
-    led_display(LED_NONE, LED_BRIGHT, LED_NONE, gui_brightness);
-  }
 }
-
 
 void ICACHE_FLASH_ATTR gpio_isr(void* arg) {
   // clear interrupt
@@ -755,8 +775,13 @@ void ICACHE_FLASH_ATTR user_init() {
     break;
   }
 
+  // register uconf handlers
+  uconf_register_read_int("brightness", &get_brightness);
+  uconf_register_write_int("brightness", &set_brightness);
+
   // initialise handlers for http server
   http_register_init();
+  uconf_register_http();
   http_register_handler("/favicon.ico", &fail_handler);
   http_register_handler("/wifi", &wifi_handler);
   http_register_handler("/info", &info_handler);
