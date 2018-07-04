@@ -57,7 +57,7 @@ typedef struct http_internal_t {
 } http_internal_t;
 
 LOCAL
-const char* pch_msg_error = HTTP_RESP_HEADER(400, text/html, 77)
+const char* pch_msg_error = HTTP_RESP_HEADER(404, text/html, 77)
                             HTML_DOC("ERROR", "<h1>Error 404</h1>");
 
 void ICACHE_FLASH_ATTR http_init(uint16_t ui_port) {
