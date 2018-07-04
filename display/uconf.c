@@ -23,19 +23,19 @@
  * handlers. Currently supported values are of integer and cstring.
  */
 
-typedef enum {
-  eInt,
-  eString,
-} e_type_t;
+typedef e_uconf_type_t e_type_t;
+typedef uconf_data_t data_t;
 
 typedef union {
   void* valid;
+  f_uconf_read_uint8_t ui8;
   f_uconf_read_int_t i;
   f_uconf_read_cstr_t s;
 } read_function_t;
 
 typedef union {
   void* valid;
+  f_uconf_write_uint8_t ui8;
   f_uconf_write_int_t i;
   f_uconf_write_cstr_t s;
 } write_function_t;
@@ -44,6 +44,7 @@ typedef struct variable_t {
   struct variable_t* ps_next;
   const char* pch_name;
   e_type_t e_type;
+  bool b_broadcast;
   read_function_t f_reader;
   write_function_t f_writer;
 } variable_t;
@@ -51,6 +52,9 @@ typedef struct variable_t {
 typedef struct action_t {
   struct action_t* ps_next;
   const char* pch_name;
+  f_uconf_action_t f_action;
+  const uconf_parameter_t* ps_args;
+  uint8_t ui_args_len;
 } action_t;
 
 LOCAL
@@ -77,6 +81,31 @@ LOCAL base_t* uconf_find_by_name(base_t* ps_first, const char* const pch_name) {
     }
   }
   return NULL;
+}
+
+bool ICACHE_FLASH_ATTR
+uconf_register_action(const char* const pch_name,
+                      const uconf_parameter_t* const ps_args,
+                      const uint8_t ui_args_len,
+                      const f_uconf_action_t f) {
+  if (!f) {
+    return false;
+  }
+  action_t* ps_act =
+    (action_t*)uconf_find_by_name((base_t*)gs_model.ps_actions, pch_name);
+  if (ps_act) {
+    return false;
+  }
+
+  ps_act = gs_model.ps_actions;
+  gs_model.ps_actions = (action_t*)os_zalloc(sizeof(action_t));
+  gs_model.ps_actions->ps_next = ps_act;
+  gs_model.ps_actions->pch_name = pch_name;
+  gs_model.ps_actions->f_action = f;
+  gs_model.ps_actions->ps_args = ps_args;
+  gs_model.ps_actions->ui_args_len = ui_args_len;
+
+  return true;
 }
 
 LOCAL
@@ -111,6 +140,22 @@ bool ICACHE_FLASH_ATTR uconf_register_var(const char* const pch_name,
 }
 
 bool ICACHE_FLASH_ATTR
+uconf_register_read_uint8(const char* const pch_name,
+                          const f_uconf_read_uint8_t f_reader) {
+  read_function_t f_r = { .ui8 = f_reader };
+  write_function_t f_w = { .valid = NULL };
+  return uconf_register_var(pch_name, eUint8, f_r, f_w);
+}
+
+bool ICACHE_FLASH_ATTR
+uconf_register_write_uint8(const char* const pch_name,
+                           const f_uconf_write_uint8_t f_writer) {
+  read_function_t f_r = { .valid = NULL };
+  write_function_t f_w = { .ui8 = f_writer };
+  return uconf_register_var(pch_name, eUint8, f_r, f_w);
+}
+
+bool ICACHE_FLASH_ATTR
 uconf_register_read_int(const char* const pch_name,
                         const f_uconf_read_int_t f_reader) {
   read_function_t f_r = { .i = f_reader };
@@ -126,6 +171,22 @@ uconf_register_write_int(const char* const pch_name,
   return uconf_register_var(pch_name, eInt, f_r, f_w);
 }
 
+bool ICACHE_FLASH_ATTR
+uconf_register_read_cstr(const char* const pch_name,
+                         const f_uconf_read_cstr_t f_reader) {
+  read_function_t f_r = { .s = f_reader };
+  write_function_t f_w = { .valid = NULL };
+  return uconf_register_var(pch_name, eString, f_r, f_w);
+}
+
+bool ICACHE_FLASH_ATTR
+uconf_register_write_cstr(const char* const pch_name,
+                          const f_uconf_write_cstr_t f_writer) {
+  read_function_t f_r = { .valid = NULL };
+  write_function_t f_w = { .s = f_writer };
+  return uconf_register_var(pch_name, eString, f_r, f_w);
+}
+
 #if !defined(SCHEMA_BUFF_LEN)
  #define SCHEMA_BUFF_LEN 1024
 #endif // !defined(SCHEMA_BUFF_LEN)
@@ -133,6 +194,8 @@ uconf_register_write_int(const char* const pch_name,
 LOCAL
 const char* ICACHE_FLASH_ATTR uconf_show_type(e_type_t e) {
   switch (e) {
+  case eUint8:
+    return "UINT8";
   case eInt:
     return "INT";
   case eString:
@@ -164,21 +227,48 @@ bool ICACHE_FLASH_ATTR schema_handler(struct espconn* conn,
   }
   size_t i = os_sprintf(pch_buff,
                         "{\"DATA\":{");
-  variable_t* ps_current = gs_model.ps_variables;
-  while (ps_current) {
-    // 51 = 48 + two closing curly braces and null byte
-    if (i + os_strlen(ps_current->pch_name) + 51 > SCHEMA_BUFF_LEN) {
+  variable_t* ps_var_current = gs_model.ps_variables;
+  while (ps_var_current) {
+    // 63 = 48 + ACTION text below, two curly braces and null byte
+    if (i + os_strlen(ps_var_current->pch_name) + 63 > SCHEMA_BUFF_LEN) {
       os_free(pch_buff);
       return false;
     }
     i += os_sprintf(pch_buff + i,
                     "%s\"%s\":{\"READ\":%s,\"WRITE\":%s,\"TYPE\":\"%s\"}",
-                    ps_current == gs_model.ps_variables ? "" : ",",
-                    ps_current->pch_name,
-                    ps_current->f_reader.valid ? "true" : "false",
-                    ps_current->f_writer.valid ? "true" : "false",
-                    uconf_show_type(ps_current->e_type));
-    ps_current = ps_current->ps_next;
+                    ps_var_current == gs_model.ps_variables ? "" : ",",
+                    ps_var_current->pch_name,
+                    ps_var_current->f_reader.valid ? "true" : "false",
+                    ps_var_current->f_writer.valid ? "true" : "false",
+                    uconf_show_type(ps_var_current->e_type));
+    ps_var_current = ps_var_current->ps_next;
+  }
+  i += os_sprintf(pch_buff + i, "},\"ACTION\":{");
+  action_t* ps_act_current = gs_model.ps_actions;
+  while (ps_act_current) {
+    // 9 includes two additional curly braces and null byte
+    size_t len = os_strlen(ps_act_current->pch_name) + 9;
+    for (int j = 0; j < ps_act_current->ui_args_len; j++) {
+      len += 6 + os_strlen(ps_act_current->ps_args[j].pch_name) +
+        os_strlen(uconf_show_type(ps_act_current->ps_args[j].e_type));
+    }
+    if (i + len > SCHEMA_BUFF_LEN) {
+      os_free(pch_buff);
+      return false;
+    }
+    i += os_sprintf(pch_buff + i,
+                    "%s\"%s\":{",
+                    ps_act_current == gs_model.ps_actions ? "" : ",",
+                    ps_act_current->pch_name);
+    for (int j = 0; j < ps_act_current->ui_args_len; j++) {
+      i += os_sprintf(pch_buff + i,
+                      "%s\"%s\":\"%s\"",
+                      j > 0 ? "," : "",
+                      ps_act_current->ps_args[j].pch_name,
+                      uconf_show_type(ps_act_current->ps_args[j].e_type));
+    }
+    i += os_sprintf(pch_buff + i, "}");
+    ps_act_current = ps_act_current->ps_next;
   }
   i += os_sprintf(pch_buff + i, "}}");
   int8_t j = http_send_response(conn,
@@ -208,15 +298,13 @@ char* ICACHE_FLASH_ATTR write_variable(variable_t* ps_var) {
   }
   char* pch_buffer = NULL;
   char* pch_tmp = NULL;
+  int i = 0;
   switch (ps_var->e_type) {
+  case eUint8:
+    i = ps_var->f_reader.ui8();
+    break;
   case eInt:
-    pch_buffer = (char*)os_malloc(15 + os_strlen(ps_var->pch_name));
-    if (pch_buffer) {
-      os_sprintf(pch_buffer,
-                 "{\"%s\":%d}",
-                 ps_var->pch_name,
-                 ps_var->f_reader.i());
-    }
+    i = ps_var->f_reader.i();
     break;
   case eString:
     pch_tmp = ps_var->f_reader.s();
@@ -230,6 +318,16 @@ char* ICACHE_FLASH_ATTR write_variable(variable_t* ps_var) {
                  pch_tmp);
     }
     break;
+  }
+
+  if (ps_var->e_type <= eInt) {
+    pch_buffer = (char*)os_malloc(15 + os_strlen(ps_var->pch_name));
+    if (pch_buffer) {
+      os_sprintf(pch_buffer,
+                 "{\"%s\":%d}",
+                 ps_var->pch_name,
+                 i);
+    }
   }
   return pch_buffer;
 }
@@ -262,6 +360,63 @@ bool ICACHE_FLASH_ATTR get_handler(struct espconn* conn,
   return false;
 }
 
+LOCAL bool ICACHE_FLASH_ATTR uconf_set_data(variable_t* ps_var,
+                                            data_t data) {
+  bool result = false;
+
+  switch (ps_var->e_type) {
+  case eUint8:
+    result = ps_var->f_writer.ui8(data.ui8);
+    break;
+  case eInt:
+    result = ps_var->f_writer.i(data.i);
+    break;
+  case eString:
+    result = ps_var->f_writer.s(data.s);
+    break;
+  }
+
+  if (result && ps_var->b_broadcast) {
+    // todo: brodcast change over udp
+  }
+
+  return result;
+}
+
+LOCAL
+const char* ICACHE_FLASH_ATTR uconf_parse_parameter(const e_type_t e_type,
+                                                    const char* pch_value,
+                                                    data_t* result) {
+  char *pch_end_value = NULL;
+  long int i = 0;
+
+  if (pch_value) {
+    if (e_type <= eInt) {
+      i = strtol(pch_value, &pch_end_value, 10);
+      if (*pch_end_value != '\0' || pch_end_value == pch_value) {
+        return "bad int";
+      }
+    }
+
+    switch (e_type) {
+    case eUint8:
+      result->ui8 = i;
+      break;
+    case eInt:
+      result->i = i;
+      break;
+    case eString:
+      result->s = (char*)pch_value;
+      break;
+    default:
+      return "bad type";
+    }
+
+    return NULL;
+  }
+  return "null ptr";
+}
+
 /*
  * handles requests to /uconf/set?var=name&val=value
  */
@@ -272,35 +427,26 @@ bool ICACHE_FLASH_ATTR set_handler(struct espconn* conn,
   variable_t* ps_var =
     (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
   const char* pch_value = http_request_context_lookup(ctx, "val");
+  data_t data;
 
   if (ps_var && pch_value && ps_var->f_writer.valid) {
-    const char* pch_result = "fail";
-    switch (ps_var->e_type) {
-    case eInt: {
-      char *endcode = NULL;
-      long int i = strtol(pch_value, &endcode, 10);
-      if (*endcode == '\0' && endcode != pch_value) {
-        if (ps_var->f_writer.i(i)) {
-          pch_result = NULL;
-        }
+    const char* pch_result = uconf_parse_parameter(ps_var->e_type,
+                                                   pch_value,
+                                                   &data);
+    uint16_t ui_response = 400;
+    if (pch_result == NULL) {
+      if (uconf_set_data(ps_var, data)) {
+        ui_response = 200;
+        pch_result = "ok";
       } else {
-        pch_result = "bad int";
+        pch_result = "fail";
       }
     }
-      break;
-    case eString:
-      if (ps_var->f_writer.s((char*)pch_value)) {
-        pch_result = NULL;
-      }
-      break;
-    default:
-      pch_result = "bad type";
-    }
+
     char* pch_buffer = (char*)os_malloc(50);
-    uint16_t ui_response = pch_result == NULL ? 200 : 400;
     size_t i = os_sprintf(pch_buffer,
                           "{\"result\":\"%s\"}",
-                          pch_result == NULL ? "ok" : pch_result);
+                          pch_result);
     int8_t j = http_send_response(conn,
                                   ui_response,
                                   gpch_json_ct,
@@ -313,6 +459,64 @@ bool ICACHE_FLASH_ATTR set_handler(struct espconn* conn,
       os_printf(__FILE__ ": failed to write to connection\n");
     }
     return true;
+
+  }
+  return false;
+}
+
+/*
+ * handles requests to /uconf/invoke?method=name&parami=valuei
+ */
+LOCAL
+bool ICACHE_FLASH_ATTR invoke_handler(struct espconn* conn,
+                                      struct http_request_context_t* ctx) {
+  const char* pch_name = http_request_context_lookup(ctx, "method");
+  action_t* ps_act =
+    (action_t*)uconf_find_by_name((base_t*)gs_model.ps_actions, pch_name);
+  if (ps_act) {
+    data_t* params = (data_t*)os_zalloc(sizeof(data_t)*ps_act->ui_args_len);
+    const char* pch_result = NULL;
+
+    for (int i = 0; !pch_result && i < ps_act->ui_args_len; i++) {
+      const char* pch_value =
+        http_request_context_lookup(ctx, ps_act->ps_args[i].pch_name);
+      if (!pch_value) {
+        pch_result = "missing parameter";
+      } else {
+        pch_result = uconf_parse_parameter(ps_act->ps_args[i].e_type,
+                                           pch_value,
+                                           params + i);
+      }
+    }
+
+    uint16_t ui_response = 400;
+    if (!pch_result) {
+      if (ps_act->f_action(ps_act->ui_args_len, params)) {
+        pch_result = "ok";
+        ui_response = 200;
+      } else {
+        pch_result = "invoke fail";
+      }
+    }
+    os_free(params);
+
+    char* pch_buffer = (char*)os_malloc(50);
+    size_t i = os_sprintf(pch_buffer,
+                          "{\"result\":\"%s\"}",
+                          pch_result);
+    int8_t j = http_send_response(conn,
+                                  ui_response,
+                                  gpch_json_ct,
+                                  NULL,
+                                  0,
+                                  pch_buffer,
+                                  i,
+                                  true);
+    if (j != ESPCONN_OK) {
+      os_printf(__FILE__ ": failed to write to connection\n");
+    }
+    return true;
+
   }
   return false;
 }
@@ -321,4 +525,38 @@ void ICACHE_FLASH_ATTR uconf_register_http() {
   http_register_handler("/uconf/schema", &schema_handler);
   http_register_handler("/uconf/get", &get_handler);
   http_register_handler("/uconf/set", &set_handler);
+  http_register_handler("/uconf/invoke", &invoke_handler);
+}
+
+bool ICACHE_FLASH_ATTR uconf_var_set_uint8(const char* const pch_name,
+                                           const uint8_t ui_value) {
+  data_t d = { .ui8 = ui_value};
+  variable_t* ps_var =
+    (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
+  if (ps_var && ps_var->e_type == eUint8) {
+    return uconf_set_data(ps_var, d);
+  }
+  return false;
+}
+
+bool ICACHE_FLASH_ATTR uconf_var_set_int(const char* const pch_name,
+                                         const int i_value) {
+  data_t d = { .i = i_value};
+  variable_t* ps_var =
+    (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
+  if (ps_var && ps_var->e_type == eInt) {
+    return uconf_set_data(ps_var, d);
+  }
+  return false;
+}
+
+bool ICACHE_FLASH_ATTR uconf_var_set_cstr(const char* const pch_name,
+                                          char* const  pch_value) {
+  data_t d = { .s = pch_value};
+  variable_t* ps_var =
+    (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
+  if (ps_var && ps_var->e_type == eString) {
+    return uconf_set_data(ps_var, d);
+  }
+  return false;
 }

@@ -55,6 +55,8 @@ LOCAL bool gb_button_hyst = false;
 LOCAL uint32_t gui_button_count = 0;
 LOCAL uint8_t gui_brightness = 0x80;
 
+LOCAL int gi_active = -1;
+
 LOCAL requester_cookies_t* gp_s_cookiejar = NULL;
 
 /* main state of application */
@@ -97,7 +99,7 @@ LOCAL char* gpch_post_data;
 #define PARAMS_EMAIL_LEN 102
 #define PARAMS_PIN_LEN 10
 #define PARAMS_VERSION_BASE 0xF4AA5880
-#define PARAMS_VERSION 2
+#define PARAMS_VERSION 3
 #define PARAMS_MAGIC_NUMBER ((uint32_t)(PARAMS_VERSION_BASE + PARAMS_VERSION))
 
 /* parameters that can be written to flash, each sector is 4KiB, so
@@ -106,6 +108,7 @@ typedef struct {
   const uint32_t ui_magic;
   char pch_email[PARAMS_EMAIL_LEN];
   char pch_pin[PARAMS_PIN_LEN];
+  uint8_t ui_brightness;
 } flash_params_t;
 LOCAL flash_params_t gs_params;
 
@@ -122,12 +125,12 @@ LOCAL void ICACHE_FLASH_ATTR error_timer(void *arg) {
  * uConf getters and setters
  */
 LOCAL
-int ICACHE_FLASH_ATTR get_brightness() {
+uint8_t ICACHE_FLASH_ATTR get_brightness() {
   return gui_brightness;
 }
 
 LOCAL
-bool ICACHE_FLASH_ATTR set_brightness(int i_brightness) {
+bool ICACHE_FLASH_ATTR set_brightness(uint8_t i_brightness) {
   if (i_brightness < 0) {
     i_brightness = 0;
   }
@@ -139,6 +142,62 @@ bool ICACHE_FLASH_ATTR set_brightness(int i_brightness) {
     led_display(LED_NONE, LED_BRIGHT, LED_NONE, gui_brightness);
   }
   return true;
+}
+
+LOCAL
+char* ICACHE_FLASH_ATTR get_email() {
+  return gs_params.pch_email;
+}
+
+LOCAL
+bool ICACHE_FLASH_ATTR set_email(char* pch_email) {
+  size_t len = os_strlen(pch_email);
+  if (!pch_email ||
+      len >= PARAMS_EMAIL_LEN ||
+      len <= 5 ||
+      !os_strchr(pch_email, '@')) {
+    os_printf("failed to set email %s", pch_email);
+    return false;
+  }
+  os_timer_disarm(&gs_request_timer);
+  os_strcpy(gs_params.pch_email, pch_email);
+  save_params();
+  ge_state = eInit;
+  if (gb_ready) {
+    os_timer_arm(&gs_request_timer, 500, 0);
+  }
+  return true;
+}
+
+LOCAL
+char* ICACHE_FLASH_ATTR get_pin() {
+  return gs_params.pch_pin;
+}
+
+LOCAL
+bool ICACHE_FLASH_ATTR set_pin(char* pch_pin) {
+  size_t len = os_strlen(pch_pin);
+  if (!pch_pin ||
+      len >= PARAMS_PIN_LEN ||
+      len <= 5) {
+    return false;
+  }
+  os_timer_disarm(&gs_request_timer);
+  os_strcpy(gs_params.pch_pin, pch_pin);
+  save_params();
+  ge_state = eInit;
+  if (gb_ready) {
+    os_timer_arm(&gs_request_timer, 500, 0);
+  }
+  return true;
+}
+
+LOCAL
+int ICACHE_FLASH_ATTR get_active() {
+  if (gb_ready) {
+    return gi_active;
+  }
+  return -1;
 }
 
 /*
@@ -292,6 +351,7 @@ members_response_cb(void* ctx,
     if (!ptr_end || ptr_end == gs_scan_ctx.pch_token) {
       i = 0;
     }
+    gi_active = i;
 
     uint8_t ui_val;
     if (i < 20)
@@ -542,6 +602,43 @@ bool ICACHE_FLASH_ATTR wifi_handler(struct espconn* conn,
   }
 }
 
+/* uConf action handlers */
+
+LOCAL
+bool ICACHE_FLASH_ATTR setwifi_action(uint8_t ui_args,
+                                      const uconf_data_t* pu_args) {
+  if (ui_args != 2) {
+    return false;
+  }
+
+  os_printf("request to set wifi credentials to: %s:%s\n",
+            pu_args[0].s,
+            pu_args[1].s);
+
+  connectStation(pu_args[0].s, os_strlen(pu_args[0].s),
+                 pu_args[1].s, os_strlen(pu_args[1].s));
+
+  return true;
+}
+
+LOCAL
+bool ICACHE_FLASH_ATTR savebrightness_action(uint8_t ui_args,
+                                             const uconf_data_t* pu_args) {
+  if (ui_args != 0) {
+    return false;
+  }
+
+  os_printf("request to store brightness to flash\n");
+
+  if (gs_params.ui_brightness != gui_brightness) {
+    gs_params.ui_brightness = gui_brightness;
+    save_params();
+  }
+
+  return true;
+}
+
+
 /* displays system info */
 bool ICACHE_FLASH_ATTR info_handler(struct espconn* conn,
                                     struct http_request_context_t* ctx) {
@@ -709,13 +806,13 @@ LOCAL void ICACHE_FLASH_ATTR button_timer(void *arg) {
   case 0:
     break;
   case 1:
-    set_brightness(0xFF);
+    uconf_var_set_uint8("brightness",0xFF);
     break;
   case 2:
-    set_brightness(0x80);
+    uconf_var_set_uint8("brightness",0x80);
     break;
   case 3:
-    set_brightness(0x20);
+    uconf_var_set_uint8("brightness",0x20);
     break;
   case 4:
   case 5:
@@ -723,10 +820,10 @@ LOCAL void ICACHE_FLASH_ATTR button_timer(void *arg) {
   case 7:
   case 8:
   case 9:
-    set_brightness(0x0A);
+    uconf_var_set_uint8("brightness",0x0A);
     break;
   default:
-    set_brightness(0x00);
+    uconf_var_set_uint8("brightness",0x00);
     break;
   }
 }
@@ -743,6 +840,11 @@ void ICACHE_FLASH_ATTR gpio_isr(void* arg) {
   // set timeout for action on button elapsed
   os_timer_arm(&gs_button_timer, 150, 0);
 }
+
+const uconf_parameter_t wifiparams[] = {
+  {"ssid", eString},
+  {"password", eString},
+};
 
 void ICACHE_FLASH_ATTR user_init() {
   uart_init(BIT_RATE_115200);
@@ -762,8 +864,10 @@ void ICACHE_FLASH_ATTR user_init() {
       *(uint32_t*)(&gs_params.ui_magic) = PARAMS_MAGIC_NUMBER;
       os_strcpy(gs_params.pch_email, "you@company.com");
       os_strcpy(gs_params.pch_pin, "12345678");
+      gs_params.ui_brightness = 0x80;
       save_params();
     }
+    gui_brightness = gs_params.ui_brightness;
     break;
   case SPI_FLASH_RESULT_ERR:
     os_printf("params read err\n");
@@ -776,8 +880,19 @@ void ICACHE_FLASH_ATTR user_init() {
   }
 
   // register uconf handlers
-  uconf_register_read_int("brightness", &get_brightness);
-  uconf_register_write_int("brightness", &set_brightness);
+  uconf_register_read_uint8("brightness", &get_brightness);
+  uconf_register_write_uint8("brightness", &set_brightness);
+
+  uconf_register_read_cstr("email", &get_email);
+  uconf_register_write_cstr("email", &set_email);
+
+  uconf_register_read_cstr("pin", &get_pin);
+  uconf_register_write_cstr("pin", &set_pin);
+
+  uconf_register_read_int("active", &get_active);
+
+  uconf_register_action("setwifi", wifiparams, 2, setwifi_action);
+  uconf_register_action("savebrightness", NULL, 0, savebrightness_action);
 
   // initialise handlers for http server
   http_register_init();
