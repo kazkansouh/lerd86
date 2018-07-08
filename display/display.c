@@ -200,6 +200,34 @@ int ICACHE_FLASH_ATTR get_active() {
   return -1;
 }
 
+LOCAL
+bool ICACHE_FLASH_ATTR set_active(int i_active) {
+  gi_active = i_active;
+
+  uint8_t ui_val;
+  if (i_active < 20)
+    ui_val = 0x00;
+  else if (i_active <= 35)
+    ui_val = 0x01;
+  else if (i_active <= 50)
+    ui_val = 0x03;
+  else if (i_active <= 70)
+    ui_val = 0x07;
+  else if (i_active <= 90)
+    ui_val = 0x0F;
+  else if (i_active <= 110)
+    ui_val = 0x1F;
+  else if (i_active <= 125)
+    ui_val = 0x3F;
+  else if (i_active <= 135)
+    ui_val = 0x7F;
+  else
+    ui_val = 0xFF;
+
+  led_display(ui_val, LED_NONE, 0, gui_brightness);
+  return true;
+}
+
 /*
  * callback when a the status of a request changes
  */
@@ -351,34 +379,13 @@ members_response_cb(void* ctx,
     if (!ptr_end || ptr_end == gs_scan_ctx.pch_token) {
       i = 0;
     }
-    gi_active = i;
-
-    uint8_t ui_val;
-    if (i < 20)
-      ui_val = 0x00;
-    else if (i <= 35)
-      ui_val = 0x01;
-    else if (i <= 50)
-      ui_val = 0x03;
-    else if (i <= 70)
-      ui_val = 0x07;
-    else if (i <= 90)
-      ui_val = 0x0F;
-    else if (i <= 110)
-      ui_val = 0x1F;
-    else if (i <= 125)
-      ui_val = 0x3F;
-    else if (i <= 135)
-      ui_val = 0x7F;
-    else
-      ui_val = 0xFF;
-
-    led_display(ui_val, LED_NONE, 0, gui_brightness);
 
     os_free(gs_scan_ctx.pch_token);
     gs_scan_ctx.pch_token = NULL;
     gs_scan_ctx.ui_position = 0;
     ge_state = eMembersToken;
+
+    uconf_var_set_int("active", i);
   }
   return true;
 }
@@ -617,7 +624,6 @@ bool ICACHE_FLASH_ATTR setwifi_action(uint8_t ui_args,
 
   connectStation(pu_args[0].s, os_strlen(pu_args[0].s),
                  pu_args[1].s, os_strlen(pu_args[1].s));
-
   return true;
 }
 
@@ -881,15 +887,16 @@ void ICACHE_FLASH_ATTR user_init() {
 
   // register uconf handlers
   uconf_register_read_uint8("brightness", &get_brightness);
-  uconf_register_write_uint8("brightness", &set_brightness);
+  uconf_register_write_uint8("brightness", &set_brightness, true, true);
 
   uconf_register_read_cstr("email", &get_email);
-  uconf_register_write_cstr("email", &set_email);
+  uconf_register_write_cstr("email", &set_email, true, false);
 
   uconf_register_read_cstr("pin", &get_pin);
-  uconf_register_write_cstr("pin", &set_pin);
+  uconf_register_write_cstr("pin", &set_pin, true, false);
 
   uconf_register_read_int("active", &get_active);
+  uconf_register_write_int("active", &set_active, false, true);
 
   uconf_register_action("setwifi", wifiparams, 2, setwifi_action);
   uconf_register_action("savebrightness", NULL, 0, savebrightness_action);

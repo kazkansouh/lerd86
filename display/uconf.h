@@ -40,17 +40,23 @@ bool uconf_register_action(const char* const pch_name,
 bool uconf_register_read_uint8(const char* const pch_name,
                                const f_uconf_read_uint8_t f_reader);
 bool uconf_register_write_uint8(const char* const pch_name,
-                                const f_uconf_write_uint8_t f_writer);
+                                const f_uconf_write_uint8_t f_writer,
+                                const bool b_remote_write,
+                                const bool b_broadcast);
 
 bool uconf_register_read_int(const char* const pch_name,
                              const f_uconf_read_int_t f_reader);
 bool uconf_register_write_int(const char* const pch_name,
-                              const f_uconf_write_int_t f_writer);
+                              const f_uconf_write_int_t f_writer,
+                              const bool b_remote_write,
+                              const bool b_broadcast);
 
 bool uconf_register_read_cstr(const char* const pch_name,
                               const f_uconf_read_cstr_t f_reader);
 bool uconf_register_write_cstr(const char* const pch_name,
-                               const f_uconf_write_cstr_t f_writer);
+                               const f_uconf_write_cstr_t f_writer,
+                               const bool b_remote_write,
+                               const bool b_broadcast);
 
 void uconf_register_http(void);
 

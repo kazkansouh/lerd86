@@ -7,6 +7,7 @@
 
 #include "http.h"
 #include "uconf.h"
+#include "beacon.h"
 
 /*
  * Server side uConf implementation.
@@ -47,6 +48,7 @@ typedef struct variable_t {
   bool b_broadcast;
   read_function_t f_reader;
   write_function_t f_writer;
+  bool b_remote_write;
 } variable_t;
 
 typedef struct action_t {
@@ -112,7 +114,9 @@ LOCAL
 bool ICACHE_FLASH_ATTR uconf_register_var(const char* const pch_name,
                                           const e_type_t e_type,
                                           const read_function_t f_reader,
-                                          const write_function_t f_writer) {
+                                          const write_function_t f_writer,
+                                          const bool b_remote_write,
+                                          const bool b_broadcast) {
   if (!f_reader.valid && !f_writer.valid) {
     return false;
   }
@@ -135,6 +139,8 @@ bool ICACHE_FLASH_ATTR uconf_register_var(const char* const pch_name,
   }
   if (f_writer.valid) {
     ps_var->f_writer = f_writer;
+    ps_var->b_remote_write = b_remote_write;
+    ps_var->b_broadcast = b_broadcast;
   }
   return true;
 }
@@ -144,15 +150,22 @@ uconf_register_read_uint8(const char* const pch_name,
                           const f_uconf_read_uint8_t f_reader) {
   read_function_t f_r = { .ui8 = f_reader };
   write_function_t f_w = { .valid = NULL };
-  return uconf_register_var(pch_name, eUint8, f_r, f_w);
+  return uconf_register_var(pch_name, eUint8, f_r, f_w, false, false);
 }
 
 bool ICACHE_FLASH_ATTR
 uconf_register_write_uint8(const char* const pch_name,
-                           const f_uconf_write_uint8_t f_writer) {
+                           const f_uconf_write_uint8_t f_writer,
+                           const bool b_remote_write,
+                           const bool b_broadcast) {
   read_function_t f_r = { .valid = NULL };
   write_function_t f_w = { .ui8 = f_writer };
-  return uconf_register_var(pch_name, eUint8, f_r, f_w);
+  return uconf_register_var(pch_name,
+                            eUint8,
+                            f_r,
+                            f_w,
+                            b_remote_write,
+                            b_broadcast);
 }
 
 bool ICACHE_FLASH_ATTR
@@ -160,15 +173,22 @@ uconf_register_read_int(const char* const pch_name,
                         const f_uconf_read_int_t f_reader) {
   read_function_t f_r = { .i = f_reader };
   write_function_t f_w = { .valid = NULL };
-  return uconf_register_var(pch_name, eInt, f_r, f_w);
+  return uconf_register_var(pch_name, eInt, f_r, f_w, false, false);
 }
 
 bool ICACHE_FLASH_ATTR
 uconf_register_write_int(const char* const pch_name,
-                         const f_uconf_write_int_t f_writer) {
+                         const f_uconf_write_int_t f_writer,
+                         const bool b_remote_write,
+                         const bool b_broadcast) {
   read_function_t f_r = { .valid = NULL };
   write_function_t f_w = { .i = f_writer };
-  return uconf_register_var(pch_name, eInt, f_r, f_w);
+  return uconf_register_var(pch_name,
+                            eInt,
+                            f_r,
+                            f_w,
+                            b_remote_write,
+                            b_broadcast);
 }
 
 bool ICACHE_FLASH_ATTR
@@ -176,15 +196,22 @@ uconf_register_read_cstr(const char* const pch_name,
                          const f_uconf_read_cstr_t f_reader) {
   read_function_t f_r = { .s = f_reader };
   write_function_t f_w = { .valid = NULL };
-  return uconf_register_var(pch_name, eString, f_r, f_w);
+  return uconf_register_var(pch_name, eString, f_r, f_w, false, false);
 }
 
 bool ICACHE_FLASH_ATTR
 uconf_register_write_cstr(const char* const pch_name,
-                          const f_uconf_write_cstr_t f_writer) {
+                          const f_uconf_write_cstr_t f_writer,
+                          const bool b_remote_write,
+                          const bool b_broadcast) {
   read_function_t f_r = { .valid = NULL };
   write_function_t f_w = { .s = f_writer };
-  return uconf_register_var(pch_name, eString, f_r, f_w);
+  return uconf_register_var(pch_name,
+                            eString,
+                            f_r,
+                            f_w,
+                            b_remote_write,
+                            b_broadcast);
 }
 
 #if !defined(SCHEMA_BUFF_LEN)
@@ -239,7 +266,8 @@ bool ICACHE_FLASH_ATTR schema_handler(struct espconn* conn,
                     ps_var_current == gs_model.ps_variables ? "" : ",",
                     ps_var_current->pch_name,
                     ps_var_current->f_reader.valid ? "true" : "false",
-                    ps_var_current->f_writer.valid ? "true" : "false",
+                    ((ps_var_current->f_writer.valid &&
+                      ps_var_current->b_remote_write) ? "true" : "false"),
                     uconf_show_type(ps_var_current->e_type));
     ps_var_current = ps_var_current->ps_next;
   }
@@ -377,7 +405,18 @@ LOCAL bool ICACHE_FLASH_ATTR uconf_set_data(variable_t* ps_var,
   }
 
   if (result && ps_var->b_broadcast) {
-    // todo: brodcast change over udp
+    os_printf("Broadcasting %s\n", ps_var->pch_name);
+    switch (ps_var->e_type) {
+    case eUint8:
+      beacon_with_variable_uint8(ps_var->pch_name, data.ui8);
+      break;
+    case eInt:
+      beacon_with_variable_int(ps_var->pch_name, data.i);
+      break;
+    case eString:
+      beacon_with_variable_str(ps_var->pch_name, data.s);
+      break;
+    }
   }
 
   return result;
@@ -429,7 +468,7 @@ bool ICACHE_FLASH_ATTR set_handler(struct espconn* conn,
   const char* pch_value = http_request_context_lookup(ctx, "val");
   data_t data;
 
-  if (ps_var && pch_value && ps_var->f_writer.valid) {
+  if (ps_var && pch_value && ps_var->f_writer.valid && ps_var->b_remote_write) {
     const char* pch_result = uconf_parse_parameter(ps_var->e_type,
                                                    pch_value,
                                                    &data);
@@ -533,7 +572,7 @@ bool ICACHE_FLASH_ATTR uconf_var_set_uint8(const char* const pch_name,
   data_t d = { .ui8 = ui_value};
   variable_t* ps_var =
     (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
-  if (ps_var && ps_var->e_type == eUint8) {
+  if (ps_var && ps_var->f_writer.valid && ps_var->e_type == eUint8) {
     return uconf_set_data(ps_var, d);
   }
   return false;
@@ -544,7 +583,7 @@ bool ICACHE_FLASH_ATTR uconf_var_set_int(const char* const pch_name,
   data_t d = { .i = i_value};
   variable_t* ps_var =
     (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
-  if (ps_var && ps_var->e_type == eInt) {
+  if (ps_var && ps_var->f_writer.valid && ps_var->e_type == eInt) {
     return uconf_set_data(ps_var, d);
   }
   return false;
@@ -555,7 +594,7 @@ bool ICACHE_FLASH_ATTR uconf_var_set_cstr(const char* const pch_name,
   data_t d = { .s = pch_value};
   variable_t* ps_var =
     (variable_t*)uconf_find_by_name((base_t*)gs_model.ps_variables, pch_name);
-  if (ps_var && ps_var->e_type == eString) {
+  if (ps_var && ps_var->f_writer.valid && ps_var->e_type == eString) {
     return uconf_set_data(ps_var, d);
   }
   return false;
