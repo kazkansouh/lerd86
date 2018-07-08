@@ -3,6 +3,7 @@
 #include <espconn.h>
 #include <osapi.h>
 #include <user_interface.h>
+#include <mem.h>
 
 #if !defined(BEACON_PORT)
   #define BEACON_PORT 8003
@@ -24,7 +25,16 @@ LOCAL const char gpch_template[] =
     "{\"api\":\"/uconf/\","
      "\"id\":\"%02X:%02X:%02X\","
      "\"name\":\"" BEACON_NAME
-  "\"}}";
+  "\"}%s}";
+
+LOCAL const char gpch_data_str[] =
+  ",\"data\":{\"name\":\"%s\",\"value\":\"%s\",\"type\":\"STRING\"}";
+
+LOCAL const char gpch_data_int[] =
+  ",\"data\":{\"name\":\"%s\",\"value\":%d,\"type\":\"INT\"}";
+
+LOCAL const char gpch_data_uint8[] =
+  ",\"data\":{\"name\":\"%s\",\"value\":%d,\"type\":\"UINT8\"}";
 
 void ICACHE_FLASH_ATTR beacon_deinit() {
   os_timer_disarm(&gs_beacon_timer);
@@ -35,14 +45,55 @@ void ICACHE_FLASH_ATTR beacon_deinit() {
   os_memset(&gs_beacon_conn, 0x00, sizeof(espconn_t));
 }
 
-LOCAL void ICACHE_FLASH_ATTR beacon_timer(void *arg) {
-  os_printf("beacon transmit\n");
-  char pch_buffer[sizeof(gpch_template)];
+LOCAL bool ICACHE_FLASH_ATTR beacon_with_data(const char* pch_data) {
+  char* pch_buffer = os_malloc(sizeof(gpch_template) + os_strlen(pch_data));
   uint8_t mac[6];
   wifi_get_macaddr(STATION_IF, mac);
-  size_t i = os_sprintf(pch_buffer, gpch_template, mac[3], mac[4], mac[5]);
-  if (espconn_sendto(&gs_beacon_conn, (uint8_t*)pch_buffer, i)
-      != ESPCONN_OK) {
+  size_t i = os_sprintf(pch_buffer,
+                        gpch_template,
+                        mac[3], mac[4], mac[5],
+                        pch_data ? pch_data : "");
+  int r = espconn_sendto(&gs_beacon_conn, (uint8_t*)pch_buffer, i);
+  os_free(pch_buffer);
+  return r == ESPCONN_OK;
+}
+
+bool ICACHE_FLASH_ATTR beacon_with_variable_str(const char* pch_name,
+                                                const char* pch_value) {
+  char* pch_buffer = os_malloc(sizeof(gpch_data_str) +
+                               os_strlen(pch_name) +
+                               os_strlen(pch_value));
+  os_sprintf(pch_buffer, gpch_data_str, pch_name, pch_value);
+  bool r = beacon_with_data((const char*)pch_buffer);
+  os_free(pch_buffer);
+  return r;
+}
+
+bool ICACHE_FLASH_ATTR beacon_with_variable_int(const char* pch_name,
+                                                const int i_value) {
+  char* pch_buffer = os_malloc(sizeof(gpch_data_int) +
+                               os_strlen(pch_name) +
+                               7);
+  os_sprintf(pch_buffer, gpch_data_int, pch_name, i_value);
+  bool r = beacon_with_data((const char*)pch_buffer);
+  os_free(pch_buffer);
+  return r;
+}
+
+bool ICACHE_FLASH_ATTR beacon_with_variable_uint8(const char* pch_name,
+                                                  const uint8_t ui_value) {
+  char* pch_buffer = os_malloc(sizeof(gpch_data_uint8) +
+                               os_strlen(pch_name) +
+                               7);
+  os_sprintf(pch_buffer, gpch_data_uint8, pch_name, ui_value);
+  bool r = beacon_with_data((const char*)pch_buffer);
+  os_free(pch_buffer);
+  return r;
+}
+
+LOCAL void ICACHE_FLASH_ATTR beacon_timer(void *arg) {
+  os_printf("beacon transmit\n");
+  if (!beacon_with_data("")) {
     os_printf("error sending beacon\n");
     beacon_deinit();
   };
