@@ -10,4 +10,18 @@ OBJECTS=$(PROJECT_NAME).o \
 
 REC_TARGETS=driver_lib/libdriver.a
 
+MODEL_TARGETS = models/top.stl models/bottom.stl
+IMAGE_TARGETS = $(patsubst %.stl,%.png,$(MODEL_TARGETS))
+
+ADDITIONAL_CLEAN = $(MODEL_TARGETS) $(IMAGE_TARGETS)
+
+OPENSCAD=openscad
+
+%.stl %.png: %.scad
+	$(OPENSCAD) -o $@ $<
+
 include $(ROOT_DIR)/rules.mk
+
+models: $(MODEL_TARGETS)
+
+images: $(IMAGE_TARGETS)

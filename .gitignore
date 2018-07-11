@@ -6,3 +6,4 @@ config.mk
 *.elf
 flash
 init-flash
+*.html
