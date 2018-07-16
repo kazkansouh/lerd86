@@ -1,7 +1,7 @@
 #ifndef _BEACON_H
 #define _BEACON_H
 
-void beacon_init(uint32_t ui_period);
+bool beacon_init(uint32_t ui_period, bool b_bcast);
 void beacon_deinit(void);
 
 bool beacon_with_variable_str(const char* pch_name,

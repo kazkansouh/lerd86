@@ -672,7 +672,7 @@ void wifi_handle_event_cb(System_Event_t *evt) {
     LED_READY;
     // reinitilise http server with new connection
     http_init(80);
-    beacon_init(30000);
+    beacon_init(30000, true);
     os_timer_arm(&gs_request_timer,1000,0);
     break;
   case EVENT_STAMODE_DISCONNECTED:
@@ -694,7 +694,7 @@ void wifi_handle_event_cb(System_Event_t *evt) {
     }
     if (evt->event_info.opmode_changed.new_opmode == SOFTAP_MODE) {
       http_init(80);
-      beacon_init(30000);
+      beacon_init(7500, false);
     }
     break;
   }
