@@ -48,6 +48,14 @@ LOCAL const char gpch_ssid[] = "EConfig";
 LOCAL os_timer_t gs_error_timer;
 LOCAL os_timer_t gs_request_timer;
 LOCAL os_timer_t gs_button_timer;
+LOCAL os_timer_t gs_station_connect_timer;
+
+// uncomment the below line to print heap usage out at regular
+// intervals.
+//#define DEBUG_HEAP
+#ifdef DEBUG_HEAP
+ LOCAL os_timer_t gs_debug_timer;
+#endif // DEBUG_HEAP
 
 // uncomment the below line to print heap usage out at regular
 // intervals.
@@ -65,6 +73,8 @@ LOCAL uint8_t gui_brightness = 0x80;
 LOCAL int gi_active = -1;
 
 LOCAL requester_cookies_t* gp_s_cookiejar = NULL;
+
+LOCAL struct station_config gs_station_conf;
 
 /* main state of application */
 LOCAL enum {
@@ -121,13 +131,29 @@ typedef struct {
 } flash_params_t;
 LOCAL flash_params_t gs_params;
 
-LOCAL void ICACHE_FLASH_ATTR connectAP(void);
+LOCAL void ICACHE_FLASH_ATTR connect_ap(void);
 LOCAL void ICACHE_FLASH_ATTR save_params(void);
 
 LOCAL void ICACHE_FLASH_ATTR error_timer(void *arg) {
   os_printf("ERROR Timout\n");
   wifi_station_disconnect();
-  connectAP();
+  connect_ap();
+}
+
+#ifdef DEBUG_HEAP
+ LOCAL void ICACHE_FLASH_ATTR debug_timer(void *arg) {
+   os_printf("FREE HEAP: %d\n", system_get_free_heap_size());
+ }
+#endif // DEBUG_HEAP
+
+LOCAL void ICACHE_FLASH_ATTR station_connect_timer(void *arg) {
+  os_printf("async station connect\n");
+
+  // will cause event of type 8 in wifi callback
+  wifi_set_opmode( STATION_MODE );
+
+  // must be called after setting mode
+  wifi_station_set_config(&gs_station_conf);
 }
 
 #ifdef DEBUG_HEAP
@@ -498,28 +524,22 @@ void ICACHE_FLASH_ATTR request_timer(void *arg) {
   }
 }
 
-void ICACHE_FLASH_ATTR connectStation(const char* ssid, const uint8 ssid_len,
-                                      const char* pass, const uint8 pass_len) {
-  struct station_config stationConf;
+void ICACHE_FLASH_ATTR connect_station(const char* ssid, const uint8 ssid_len,
+                                       const char* pass, const uint8 pass_len) {
+  os_memset(&gs_station_conf.ssid, 0x00, 64);
+  os_memset(&gs_station_conf.password, 0x00, 32);
 
-  os_memset(&stationConf.ssid, 0x00, 64);
-  os_memset(&stationConf.password, 0x00, 32);
+  os_memcpy(&gs_station_conf.ssid, ssid, ssid_len > 63 ? 63 : ssid_len);
+  os_memcpy(&gs_station_conf.password, pass, pass_len > 31 ? 31 : pass_len);
 
-  os_memcpy(&stationConf.ssid, ssid, ssid_len);
-  os_memcpy(&stationConf.password, pass, pass_len);
+  os_printf("setting ssid: %s\n", gs_station_conf.ssid);
+  os_printf("setting key: %s\n", gs_station_conf.password);
 
-  os_printf("setting ssid: %s\n", stationConf.ssid);
-  os_printf("setting key: %s\n", stationConf.password);
-
-  // will cause event of type 8 in wifi callback
-  wifi_set_opmode( STATION_MODE );
-
-  // must be called after setting mode
-  wifi_station_set_config(&stationConf);
+  os_timer_arm(&gs_station_connect_timer, 100, 0);
 }
 
 LOCAL void ICACHE_FLASH_ATTR
-connectAP() {
+connect_ap() {
   struct softap_config apConf;
   os_printf("starting AP\n");
   LED_AP;
@@ -618,8 +638,8 @@ bool ICACHE_FLASH_ATTR setwifi_action(uint8_t ui_args,
             pu_args[0].s,
             pu_args[1].s);
 
-  connectStation(pu_args[0].s, os_strlen(pu_args[0].s),
-                 pu_args[1].s, os_strlen(pu_args[1].s));
+  connect_station(pu_args[0].s, os_strlen(pu_args[0].s),
+                  pu_args[1].s, os_strlen(pu_args[1].s));
   return true;
 }
 
@@ -682,7 +702,7 @@ void wifi_handle_event_cb(System_Event_t *evt) {
     break;
   case EVENT_STAMODE_DHCP_TIMEOUT:
     // start AP mode
-    connectAP();
+    connect_ap();
     break;
   case EVENT_OPMODE_CHANGED:
     if (evt->event_info.opmode_changed.new_opmode == STATION_MODE) {
@@ -838,6 +858,8 @@ void ICACHE_FLASH_ATTR user_init() {
   os_timer_setfn(&gs_error_timer, error_timer , NULL);
   os_timer_setfn(&gs_request_timer, request_timer , NULL);
   os_timer_setfn(&gs_button_timer, button_timer , NULL);
+  os_timer_setfn(&gs_station_connect_timer, station_connect_timer, NULL);
+
 #ifdef DEBUG_HEAP
   os_timer_setfn(&gs_debug_timer, debug_timer , NULL);
   os_timer_arm(&gs_debug_timer, 35000, 1);
