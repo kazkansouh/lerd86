@@ -25,9 +25,9 @@ support_hole_radius = support_hole_diameter/2;
 usb_port_width = 7.8;
 usb_port_height = 2.8;
 usb_port_standoff = 1.5;
-usb_port_inset = 0.2;
-usb_port_oversize_width = 1.6;
-usb_port_oversize_height = 2.1;
+usb_port_inset = 0.25;
+usb_port_oversize_width = 2.4;
+usb_port_oversize_height = 2.2;
 
 wifi_module_width = 16;
 wifi_module_height = 0.78;
