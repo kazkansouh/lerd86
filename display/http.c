@@ -19,12 +19,28 @@
 #define TIMEOUT 60*5
 #define MAX_HANDLERS 10
 
+#define xstr(s) str(s)
+#define str(s) #s
+
 typedef struct espconn espconn_t;
 
 LOCAL void connectcb(espconn_t *conn);
 LOCAL void receivecb(espconn_t *conn, char *pdata, unsigned short len);
 LOCAL void disconnectcb(espconn_t *conn);
 LOCAL void sentcb(espconn_t *conn);
+LOCAL void reconncb(espconn_t *conn, int8_t err);
+
+LOCAL void http_request_context_set_resource(http_request_context_t* ctx,
+                                             char* pch_resource,
+                                             uint8_t ui_size);
+LOCAL bool http_request_context_add_parameter(http_request_context_t* ctx,
+                                              char* pch_param,
+                                              uint8_t ui_param_size,
+                                              char* pch_value,
+                                              uint8_t ui_value_size);
+LOCAL http_request_context_t* http_request_context_new(void);
+LOCAL void http_request_context_free(http_request_context_t* ctx);
+
 
 LOCAL espconn_t s_server_conn = {0};
 LOCAL esp_tcp s_server_tcp = {0};
@@ -37,6 +53,7 @@ LOCAL void server_Task(os_event_t *events);
 
 enum server_task_ids {
   DISCONNECT_CLIENT    = 0x00,
+  CLIENT_DISCONNECTED,
   ERROR_404,
   APP_SERVICED,
   SEND_DATA,
@@ -67,10 +84,19 @@ void ICACHE_FLASH_ATTR http_init(uint16_t ui_port) {
                  server_TaskQueueLen);
 
   if (s_server_conn.state == ESPCONN_LISTEN) {
-    espconn_disconnect(&s_server_conn);
-    os_memset(&s_server_conn, 0x00, sizeof(espconn_t));
-    os_memset(&s_server_tcp, 0x00, sizeof(esp_tcp));
+    os_printf(__FILE__ ": already initialised.");
+    return;
   }
+
+  if (s_server_conn.state != ESPCONN_NONE) {
+    os_printf(__FILE__ ": not continuing with http initilisation as "
+              "connection already has a state %d.\n",
+              s_server_conn.state);
+    return;
+  }
+  os_printf(__FILE__ ": initialising http server on port %u\n", ui_port);
+  os_memset(&s_server_conn, 0x00, sizeof(espconn_t));
+  os_memset(&s_server_tcp, 0x00, sizeof(esp_tcp));
 
   s_server_conn.type = ESPCONN_TCP;
   s_server_conn.state = ESPCONN_NONE;
@@ -85,22 +111,24 @@ void ICACHE_FLASH_ATTR http_init(uint16_t ui_port) {
 
 LOCAL void ICACHE_FLASH_ATTR
 connectcb(espconn_t *conn) {
-  conn->reverse =
-    (http_request_context_t *)os_zalloc(sizeof(http_request_context_t));
+  conn->reverse = http_request_context_new();
   if (!conn->reverse) {
-    // out of mem
-    return;
-  }
-  ((http_request_context_t *)conn->reverse)->ps_internal =
-    (http_internal_t*)os_zalloc(sizeof(http_internal_t));
-  if (!((http_request_context_t *)conn->reverse)->ps_internal) {
-    // out of mem
-    os_free(conn->reverse);
+    os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
     return;
   }
   espconn_regist_recvcb(conn, (espconn_recv_callback)receivecb);
   espconn_regist_disconcb(conn, (espconn_connect_callback)disconnectcb);
   espconn_regist_sentcb(conn, (espconn_sent_callback)sentcb);
+  espconn_regist_reconcb(conn, (espconn_reconnect_callback)reconncb);
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+reconncb(espconn_t *conn, int8_t err) {
+  http_request_context_t* ctx = (http_request_context_t*)conn->reverse;
+  os_printf(__FILE__ ": error %d on connection.\n", err);
+  http_request_context_free(ctx);
+  conn->reverse = NULL;
+  system_os_post(server_TaskPrio, CLIENT_DISCONNECTED, (uintptr_t)NULL);
 }
 
 LOCAL void ICACHE_FLASH_ATTR
@@ -139,11 +167,14 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
 
               // param + paramsize
               // value + valuesize
-              http_request_context_add_parameter(ctx,
-                                                 param,
-                                                 paramsize,
-                                                 value,
-                                                 valuesize);
+              if (!http_request_context_add_parameter(ctx,
+                                                      param,
+                                                      paramsize,
+                                                      value,
+                                                      valuesize)) {
+                os_printf(__FILE__ ": failed to save http request parameter\n");
+                break;
+              }
             } else {
               break;
             }
@@ -160,6 +191,8 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
                           ctx->pch_resource,
                           os_strlen(pch_handlers[i])) == 0) {
             ctx->ps_internal->f_handler = pf_handlers[i];
+            os_printf(__FILE__ ": processing request for %s\n",
+                      ctx->pch_resource);
             system_os_post(server_TaskPrio, APP_SERVICED, (uintptr_t)conn);
             return;
           }
@@ -175,6 +208,7 @@ LOCAL void ICACHE_FLASH_ATTR
 disconnectcb(espconn_t *conn) {
   http_request_context_free(conn->reverse);
   conn->reverse = NULL;
+  system_os_post(server_TaskPrio, CLIENT_DISCONNECTED, (uintptr_t)NULL);
 }
 
 LOCAL void ICACHE_FLASH_ATTR
@@ -190,15 +224,34 @@ sentcb(espconn_t *conn) {
 LOCAL void ICACHE_FLASH_ATTR
 server_Task(os_event_t *events) {
   espconn_t *pespconn = (espconn_t *)events->par;
-  http_request_context_t *ctx = (http_request_context_t*)pespconn->reverse;
+  http_request_context_t *ctx = NULL;
+  if (pespconn) {
+    ctx = (http_request_context_t*)pespconn->reverse;
+  } else {
+    // currently CLIENT_DISCONNECTED is the only case where its
+    // acceptable to have a null pointer as argument as the connection
+    // could have been released by the time its processed. possibly
+    // replace this null with a callback function pointer.
+    if (events->sig != CLIENT_DISCONNECTED) {
+      return;
+    }
+  }
 
   switch (events->sig) {
   case DISCONNECT_CLIENT:
-    if (ctx->ps_internal->pch_data_to_free) {
+    // validity of ps_internal needs to be checked to avoid invalid
+    // memmory access. not clear how the event is posted with invalid
+    // context.
+    if (ctx->ps_internal && ctx->ps_internal->pch_data_to_free) {
       os_free((void*)ctx->ps_internal->pch_data_to_free);
       ctx->ps_internal->pch_data_to_free = NULL;
+      os_printf(__FILE__ ": server free'd user buffer\n");
     }
     espconn_disconnect(pespconn);
+    break;
+  case CLIENT_DISCONNECTED:
+    // TODO: consider adding callback here to facilitate user to free
+    // resources.
     break;
   case SEND_DATA:
     if (ctx->ps_internal->pch_data && ctx->ps_internal->ui_data_len) {
@@ -220,7 +273,7 @@ server_Task(os_event_t *events) {
     }
     break;
   case APP_SERVICED:
-    if (ctx->ps_internal->f_handler(pespconn, ctx)) {
+    if (ctx->ps_internal && ctx->ps_internal->f_handler(pespconn, ctx)) {
       break;
     }
     // !! no break
@@ -248,15 +301,20 @@ bool ICACHE_FLASH_ATTR http_register_handler(const char* pch_namespace,
   for (i = 0; i < MAX_HANDLERS; i++) {
     if (pch_handlers[i] == NULL) {
       pch_handlers[i] = (char*)os_zalloc(os_strlen(pch_namespace) + 1);
-      os_memcpy(pch_handlers[i], pch_namespace, os_strlen(pch_namespace));
-      pf_handlers[i] = f_handler;
-      return true;
+      if (!pch_handlers[i]) {
+        os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
+        return false;
+      } else {
+        os_memcpy(pch_handlers[i], pch_namespace, os_strlen(pch_namespace));
+        pf_handlers[i] = f_handler;
+        return true;
+      }
     }
   }
   return false;
 }
 
-void ICACHE_FLASH_ATTR
+LOCAL void ICACHE_FLASH_ATTR
 http_request_context_set_resource(http_request_context_t* ctx,
                                   char* pch_resource,
                                   uint8_t ui_size) {
@@ -264,6 +322,10 @@ http_request_context_set_resource(http_request_context_t* ctx,
     os_free(ctx->pch_resource);
   }
   ctx->pch_resource = os_zalloc(ui_size+1);
+  if (!ctx->pch_resource) {
+    os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
+    return;
+  }
   os_memcpy(ctx->pch_resource, pch_resource, ui_size);
 }
 
@@ -297,46 +359,90 @@ http_urldecode(char* pch_url) {
   pch_url[i] = '\0';
 }
 
-void ICACHE_FLASH_ATTR
+LOCAL bool ICACHE_FLASH_ATTR
 http_request_context_add_parameter(http_request_context_t* ctx,
                                    char* pch_param,
                                    uint8_t ui_param_size,
                                    char* pch_value,
                                    uint8_t ui_value_size) {
-  ctx->s_query = os_realloc(ctx->s_query,
-                            sizeof(http_query_t) * (ctx->ui_query_size + 1));
-  ctx->s_query[ctx->ui_query_size].pch_param = os_zalloc(ui_param_size+1);
+  http_query_t* s_query =
+    os_realloc(ctx->s_query,
+               sizeof(http_query_t) * (ctx->ui_query_size + 1));
+  if (!s_query) {
+    os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
+    return false;
+  }
+  ctx->s_query = s_query;
+  s_query[ctx->ui_query_size].pch_param = os_zalloc(ui_param_size+1);
+  if (!s_query[ctx->ui_query_size].pch_param) {
+    os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
+    return false;
+  }
   os_memcpy(ctx->s_query[ctx->ui_query_size].pch_param,
             pch_param,
             ui_param_size);
-  ctx->s_query[ctx->ui_query_size].pch_value = os_zalloc(ui_value_size+1);
+  s_query[ctx->ui_query_size].pch_value = os_zalloc(ui_value_size+1);
+  if (!s_query[ctx->ui_query_size].pch_value) {
+    os_free(s_query[ctx->ui_query_size].pch_param);
+    s_query[ctx->ui_query_size].pch_param = NULL;
+    os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
+    return false;
+  }
   os_memcpy(ctx->s_query[ctx->ui_query_size].pch_value,
             pch_value,
             ui_value_size);
+  // insitu decode of parameter
   http_urldecode(ctx->s_query[ctx->ui_query_size].pch_value);
   ctx->ui_query_size++;
+  return true;
 }
 
-void ICACHE_FLASH_ATTR
+LOCAL http_request_context_t* ICACHE_FLASH_ATTR
+http_request_context_new() {
+  http_request_context_t* pctx = os_zalloc(sizeof(http_request_context_t));
+  if (!pctx) {
+    return NULL;
+  }
+  pctx->ps_internal = (http_internal_t*)os_zalloc(sizeof(http_internal_t));
+  if (!pctx->ps_internal) {
+    os_free(pctx);
+    pctx = NULL;
+    return NULL;
+  }
+  return pctx;
+}
+
+LOCAL void ICACHE_FLASH_ATTR
 http_request_context_free(http_request_context_t* ctx) {
   if (ctx) {
     if (ctx->pch_resource) {
       os_free(ctx->pch_resource);
       ctx->pch_resource = NULL;
     }
-    int i;
-    for (i = 0; i < ctx->ui_query_size; i++) {
-      if (ctx->s_query[i].pch_param) {
-        os_free(ctx->s_query[i].pch_param);
-        ctx->s_query[i].pch_param = NULL;
+    if (ctx->s_query) {
+      int i;
+      for (i = 0; i < ctx->ui_query_size; i++) {
+        if (ctx->s_query[i].pch_param) {
+          os_free(ctx->s_query[i].pch_param);
+          ctx->s_query[i].pch_param = NULL;
+        }
+        if (ctx->s_query[i].pch_value) {
+          os_free(ctx->s_query[i].pch_value);
+          ctx->s_query[i].pch_value = NULL;
+        }
       }
-      if (ctx->s_query[i].pch_value) {
-        os_free(ctx->s_query[i].pch_value);
-        ctx->s_query[i].pch_value = NULL;
-      }
+      os_free(ctx->s_query);
+      ctx->s_query = NULL;
     }
-    os_free(ctx->s_query);
-    ctx->s_query = NULL;
+    if (ctx->ps_internal) {
+      if (ctx->ps_internal->pch_data_to_free) {
+        os_free((void*)ctx->ps_internal->pch_data_to_free);
+        ctx->ps_internal->pch_data_to_free = NULL;
+        os_printf(__FILE__ ": caught unfree'd user data\n");
+      }
+      os_free(ctx->ps_internal);
+      ctx->ps_internal = NULL;
+    }
     os_free(ctx);
   }
 }
@@ -385,6 +491,11 @@ http_send_response(espconn_t* const conn,
                                      http_header_len(ps_headers,
                                                      ui_headers_len) +
                                      3); // "\r\n\0"
+  if (!ch_buffer) {
+    os_printf(__FILE__ ":" xstr(__LINE__) ": Out Of Memory\n");
+    system_os_post(server_TaskPrio, DISCONNECT_CLIENT, (uintptr_t)conn);
+    return ESPCONN_MEM;
+  }
   size_t i = os_sprintf(ch_buffer, "HTTP/1.1 %d\r\n", ui_response_code);
   if (ui_payload_len && pch_payload) {
     i += os_sprintf(ch_buffer + i,
@@ -402,6 +513,7 @@ http_send_response(espconn_t* const conn,
   }
   i += os_sprintf(ch_buffer + i, "\r\n");
   int8_t i_ret = espconn_send(conn, (uint8_t*)ch_buffer, i);
+  os_free(ch_buffer);
   if (i_ret == ESPCONN_OK) {
     http_request_context_t *ctx = (http_request_context_t*)conn->reverse;
     ctx->ps_internal->pch_data = (const uint8_t*)pch_payload;

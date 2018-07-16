@@ -60,16 +60,6 @@ int8_t http_send_response(struct espconn* const conn,
                           const uint16_t ui_payload_len,
                           const bool b_free_payload);
 
-void http_request_context_set_resource(http_request_context_t* ctx,
-                                       char* pch_resource,
-                                       uint8_t ui_size);
-void http_request_context_add_parameter(http_request_context_t* ctx,
-                                       char* pch_param,
-                                       uint8_t ui_param_size,
-                                       char* pch_value,
-                                       uint8_t ui_value_size);
-void http_request_context_free(http_request_context_t* ctx);
-
 const char* http_request_context_lookup(http_request_context_t* ctx,
                                         const char* pch_param);
 
