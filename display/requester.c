@@ -418,6 +418,20 @@ LOCAL bool ICACHE_FLASH_ATTR process_header_line(requester_context_t *ctx) {
   return false;
 }
 
+// uncomment to printout debugging information about the processing of
+// the state of the receive state.
+// #define DEBUG_RECEIVE_STATE
+
+#ifdef DEBUG_RECEIVE_STATE
+  #define SETSTATE(s)                             \
+    do {                                          \
+      ctx->e_response_state = s;                  \
+      os_printf("%x",ctx->e_response_state);      \
+    } while(0);
+#else
+  #define SETSTATE(s) ctx->e_response_state = s;
+#endif // DEBUG_RECEIVE_STATE
+
 LOCAL void ICACHE_FLASH_ATTR
 receivecb(espconn_t *conn, char *pdata, unsigned short len) {
   requester_context_t *ctx = (requester_context_t*)conn->reverse;
@@ -432,16 +446,19 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
    * Status-Line = HTTP-Version SP Status-Code SP Reason-Phrase CRLF
    */
 
+#ifdef DEBUG_RECEIVE_STATE
+  os_printf(".");
+#endif // DEBUG_RECEIVE_STATE
   os_timer_arm(&timeout_timer_t, 500, 0);
 
   while (len || ctx->e_response_state == IN_ERROR) {
     switch (ctx->e_response_state) {
     case STATUS_LINE   :
       if (*pdata == '\r') {
-        ctx->e_response_state = LINE_CR;
+        SETSTATE(LINE_CR);
         // process line
         if (!process_status_line(ctx)) {
-          ctx->e_response_state = IN_ERROR;
+          SETSTATE(IN_ERROR);
         }
       } else {
         ctx->pch_line_buffer[ctx->ui_line_buffer] = *pdata;
@@ -450,27 +467,27 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
       break;
     case LINE_CR       :
       if (*pdata == '\n') {
-        ctx->e_response_state = LINE_LF;
+        SETSTATE(LINE_LF);
         os_memset(ctx->pch_line_buffer, 0x00, MAX_HEADER_LENGTH);
         ctx->ui_line_buffer = 0;
       } else {
-        ctx->e_response_state = IN_ERROR;
+        SETSTATE(IN_ERROR);
       }
       break;
     case LINE_LF       :
       if (*pdata == '\r') {
-        ctx->e_response_state = END_HEADER_CR;
+        SETSTATE(END_HEADER_CR);
         break;
       } else {
-        ctx->e_response_state = HEADER_LINE;
+        SETSTATE(HEADER_LINE);
       }
       // ! no break
     case HEADER_LINE   :
       if (*pdata == '\r') {
-        ctx->e_response_state = LINE_CR;
+        SETSTATE(LINE_CR);
         // process line
         if (!process_header_line(ctx)) {
-          ctx->e_response_state = IN_ERROR;
+          SETSTATE(IN_ERROR);
         }
       } else {
         ctx->pch_line_buffer[ctx->ui_line_buffer] = *pdata;
@@ -479,19 +496,19 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
       break;
     case END_HEADER_CR :
       if (*pdata == '\n') {
-        ctx->e_response_state = ctx->b_chunked ? LENGTH : IN_BODY;
+        SETSTATE(ctx->b_chunked ? LENGTH : IN_BODY);
         os_memset(ctx->pch_line_buffer, 0x00, MAX_HEADER_LENGTH);
         ctx->ui_line_buffer = 0;
         if (!ctx->f_header(ctx->ctx, ctx->ui_response_code)) {
-          ctx->e_response_state = IN_ERROR;
+          SETSTATE(IN_ERROR);
         }
       } else {
-        ctx->e_response_state = IN_ERROR;
+        SETSTATE(IN_ERROR);
       }
       break;
     case LENGTH        :
       if (*pdata == '\r') {
-        ctx->e_response_state = LENGTH_CR;
+        SETSTATE(LENGTH_CR);
         ctx->pch_line_buffer[ctx->ui_line_buffer] = '\0';
       } else {
         ctx->pch_line_buffer[ctx->ui_line_buffer] = *pdata;
@@ -503,19 +520,19 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
         char *ptr_end = NULL;
         long int i = strtol(ctx->pch_line_buffer, &ptr_end, 16);
         if (!ptr_end || ptr_end == ctx->pch_line_buffer) {
-          ctx->e_response_state = IN_ERROR;
+          SETSTATE(IN_ERROR);
         } else {
-          ctx->e_response_state = IN_CHUNK;
+          SETSTATE(IN_CHUNK);
           ctx->i_response_length = i;
           if (i == 0) {
             STATUS(conn) = CLOSE_CONNECTION;
             system_os_post(requester_TaskPrio, 0, (uintptr_t)conn);
-            ctx->e_response_state = NOOP;
+            SETSTATE(NOOP);
             return;
           }
         }
       } else {
-        ctx->e_response_state = IN_ERROR;
+        SETSTATE(IN_ERROR);
       }
       break;
     case IN_CHUNK      :
@@ -525,9 +542,9 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
           pdata += (ctx->i_response_length - 1);
           len -= (ctx->i_response_length - 1);
           ctx->i_response_length = 0;
-          ctx->e_response_state = CHUNK_CR;
+          SETSTATE(CHUNK_CR);
         } else {
-          ctx->e_response_state = IN_ERROR;
+          SETSTATE(IN_ERROR);
         }
       } else {
         if (ctx->f_response(ctx->ctx, pdata, len)) {
@@ -536,24 +553,24 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
           len = 0;
           return;
         } else {
-          ctx->e_response_state = IN_ERROR;
+          SETSTATE(IN_ERROR);
         }
       }
       break;
     case CHUNK_CR      :
       if (*pdata == '\r') {
-        ctx->e_response_state = CHUNK_LF;
+        SETSTATE(CHUNK_LF);
       } else {
-        ctx->e_response_state = IN_ERROR;
+        SETSTATE(IN_ERROR);
       }
       break;
     case CHUNK_LF      :
       if (*pdata == '\n') {
-        ctx->e_response_state = LENGTH;
+        SETSTATE(LENGTH);
         os_memset(ctx->pch_line_buffer, 0x00, MAX_HEADER_LENGTH);
         ctx->ui_line_buffer = 0;
       } else {
-        ctx->e_response_state = IN_ERROR;
+        SETSTATE(IN_ERROR);
       }
       break;
     case IN_BODY       :
@@ -563,17 +580,17 @@ receivecb(espconn_t *conn, char *pdata, unsigned short len) {
         if (ctx->i_response_length <= 0) {
           STATUS(conn) = CLOSE_CONNECTION;
           system_os_post(requester_TaskPrio, 0, (uintptr_t)conn);
-          ctx->e_response_state = NOOP;
+          SETSTATE(NOOP);
         }
         return;
       }
-      ctx->e_response_state = IN_ERROR;
+      SETSTATE(IN_ERROR);
       break;
     case IN_ERROR      :
       os_printf("invalid response received\n");
       STATUS(conn) = CLOSE_CONNECTION;
       system_os_post(requester_TaskPrio, 0, (uintptr_t)conn);
-      ctx->e_response_state = NOOP;
+      SETSTATE(NOOP);
       return;
     case NOOP:
       return;

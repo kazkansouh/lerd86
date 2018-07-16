@@ -49,6 +49,13 @@ LOCAL os_timer_t gs_error_timer;
 LOCAL os_timer_t gs_request_timer;
 LOCAL os_timer_t gs_button_timer;
 
+// uncomment the below line to print heap usage out at regular
+// intervals.
+//#define DEBUG_HEAP
+#ifdef DEBUG_HEAP
+ LOCAL os_timer_t gs_debug_timer;
+#endif // DEBUG_HEAP
+
 LOCAL bool gb_ready = false;
 LOCAL bool gb_button_hyst = false;
 
@@ -122,6 +129,12 @@ LOCAL void ICACHE_FLASH_ATTR error_timer(void *arg) {
   wifi_station_disconnect();
   connectAP();
 }
+
+#ifdef DEBUG_HEAP
+ LOCAL void ICACHE_FLASH_ATTR debug_timer(void *arg) {
+   os_printf("FREE HEAP: %d\n", system_get_free_heap_size());
+ }
+#endif // DEBUG_HEAP
 
 /*
  * uConf getters and setters
@@ -825,6 +838,10 @@ void ICACHE_FLASH_ATTR user_init() {
   os_timer_setfn(&gs_error_timer, error_timer , NULL);
   os_timer_setfn(&gs_request_timer, request_timer , NULL);
   os_timer_setfn(&gs_button_timer, button_timer , NULL);
+#ifdef DEBUG_HEAP
+  os_timer_setfn(&gs_debug_timer, debug_timer , NULL);
+  os_timer_arm(&gs_debug_timer, 35000, 1);
+#endif // DEBUG_HEAP
 
   // setup leds
   led_init();
