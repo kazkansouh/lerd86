@@ -43,7 +43,7 @@
 void ets_isr_mask(int);
 void ets_isr_unmask(int);
 
-LOCAL const char gpch_ssid[] = "EConfig";
+LOCAL const char gpch_ssid[] = "uConfig";
 
 LOCAL os_timer_t gs_error_timer;
 LOCAL os_timer_t gs_request_timer;
@@ -546,9 +546,33 @@ connect_ap() {
   os_timer_disarm(&gs_request_timer);
 
   wifi_set_opmode( SOFTAP_MODE );
-  os_memcpy(&apConf.ssid, gpch_ssid, os_strlen(gpch_ssid));
-  apConf.ssid_len = os_strlen(gpch_ssid);
-  apConf.authmode = AUTH_OPEN;
+  uint8_t rnd[2];
+  if (os_get_random(rnd, 2) == 0) {
+    apConf.ssid_len = os_sprintf((char*)apConf.ssid,
+                                 "%s %02x%02x",
+                                 gpch_ssid,
+                                 rnd[0],
+                                 rnd[1]);
+    uint8_t mac[6];
+    wifi_get_macaddr(STATION_IF, mac);
+    os_sprintf((char*)apConf.password,
+               "%02x%02x%02x%02x",
+               rnd[0],
+               rnd[1],
+               mac[4],
+               mac[5]);
+  } else {
+    apConf.ssid_len = os_sprintf((char*)apConf.ssid,
+                                 "%s",
+                                 gpch_ssid);
+    os_sprintf((char*)apConf.password, "nopassword");
+  }
+
+  uint8_t channel;
+  os_get_random(&channel, 1);
+  apConf.authmode = AUTH_WPA2_PSK;
+  // randomly pick channel from 1 to 10
+  apConf.channel = (channel % 10) + 1;
   wifi_softap_set_config_current(&apConf);
 }
 
